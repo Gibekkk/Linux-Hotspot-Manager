@@ -1,7 +1,5 @@
 # Linux Hotspot Manager
 
-![Icon](icon.png)
-
 **Linux Hotspot Manager** is a lightweight, powerful GUI tool to create a virtual Wi-Fi Hotspot (Repeater) on Linux. It allows you to share your internet connection (Ethernet or Wi-Fi) using a single Wi-Fi adapter or a secondary one, with advanced management features like client limits, blacklisting, and real-time monitoring.
 
 Built with Python (Tkinter) and Bash, it leverages `NetworkManager`, `iw`, and `dnsmasq` to provide a stable and configurable hotspot experience.
