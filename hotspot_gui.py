@@ -8,9 +8,12 @@ import time
 import fcntl
 import sys
 
-# --- KONFIGURASI FILE ---
-SCRIPT_PATH = "/home/gibekkk/App/Linux-Hotspot-Manager/hotspot_ctrl.sh"
-CONFIG_FILE = "/home/gibekkk/App/Linux-Hotspot-Manager/hotspot_config.json"
+# --- KONFIGURASI FILE & PATH ---
+# Menggunakan path relatif agar fleksibel saat diinstall
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_PATH = os.path.join(BASE_DIR, "hotspot_ctrl.sh")
+APP_CONFIG_FILE = os.path.join(BASE_DIR, "app_config.json") # Config Limit/Blacklist
+WIFI_CONFIG_FILE = os.path.join(BASE_DIR, "wifi_config.json") # Config SSID/Pass
 LOCK_FILE = "/tmp/linux_hotspot.lock"
 
 class HotspotApp:
@@ -19,12 +22,12 @@ class HotspotApp:
         try:
             fcntl.lockf(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except IOError:
-            messagebox.showerror("Error", "Aplikasi Hotspot sudah berjalan!")
+            messagebox.showerror("Error", "Linux Hotspot Manager sudah berjalan!")
             sys.exit(1)
 
         self.root = root
-        self.root.title("Gibekkk Hotspot Manager V18")
-        self.root.geometry("650x500")
+        self.root.title("Linux Hotspot Manager") # Nama Baru
+        self.root.geometry("680x520")
         
         style = ttk.Style()
         style.configure("Overlay.TFrame", background="#f0f0f0") 
@@ -33,11 +36,12 @@ class HotspotApp:
         self.config = self.load_config()
 
         if os.geteuid() != 0:
-            messagebox.showerror("Error", "Jalankan dengan sudo!")
+            messagebox.showerror("Error", "Aplikasi ini membutuhkan akses root!\nJalankan dengan: sudo python3 hotspot_gui.py")
             root.destroy()
+            return
 
         # --- LAYOUT ---
-        main_frame = ttk.Frame(root, padding="10")
+        main_frame = ttk.Frame(root, padding="15")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # Footer
@@ -45,32 +49,36 @@ class HotspotApp:
         footer_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
         self.count_var = tk.StringVar(value="Total: 0")
         ttk.Label(footer_frame, textvariable=self.count_var, font=("Helvetica", 9)).pack(side=tk.RIGHT)
-        ttk.Label(footer_frame, text="Gibekkk Net Manager", font=("Helvetica", 9, "italic"), foreground="gray").pack(side=tk.LEFT)
+        ttk.Label(footer_frame, text="Linux Hotspot Manager", font=("Helvetica", 9, "italic"), foreground="gray").pack(side=tk.LEFT)
 
-        # Header & Controls
+        # Header
         top_container = ttk.Frame(main_frame)
         top_container.pack(side=tk.TOP, fill=tk.X)
 
-        self.header = ttk.Label(top_container, text="Wi-Fi Repeater Controller", font=("Helvetica", 14, "bold"))
-        self.header.pack(pady=(0, 10))
+        self.header = ttk.Label(top_container, text="Wi-Fi Repeater Controller", font=("Helvetica", 16, "bold"))
+        self.header.pack(pady=(0, 5))
+        
+        # Info SSID (Baca dari wifi_config)
+        self.ssid_label = ttk.Label(top_container, text=self.get_ssid_info(), font=("Helvetica", 10), foreground="#555")
+        self.ssid_label.pack(pady=(0, 15))
 
         # Status & Settings
         ctrl_frame = ttk.Frame(top_container)
         ctrl_frame.pack(fill=tk.X, pady=5)
 
         self.status_var = tk.StringVar(value="Status: Checking...")
-        self.status_label = ttk.Label(ctrl_frame, textvariable=self.status_var, font=("Helvetica", 10, "bold"))
+        self.status_label = ttk.Label(ctrl_frame, textvariable=self.status_var, font=("Helvetica", 11, "bold"))
         self.status_label.pack(side=tk.LEFT)
 
         settings_frame = ttk.Frame(ctrl_frame)
         settings_frame.pack(side=tk.RIGHT)
         
-        ttk.Label(settings_frame, text="Limit:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(settings_frame, text="Limit Client:").pack(side=tk.LEFT, padx=5)
         self.limit_var = tk.IntVar(value=self.config.get("limit", 5))
         self.limit_spin = ttk.Spinbox(settings_frame, from_=1, to=50, textvariable=self.limit_var, width=3, command=self.save_config)
         self.limit_spin.pack(side=tk.LEFT, padx=(0, 10))
 
-        self.bl_btn = ttk.Button(settings_frame, text="Blacklist", command=self.open_blacklist_overlay)
+        self.bl_btn = ttk.Button(settings_frame, text="Manage Blacklist", command=self.open_blacklist_overlay)
         self.bl_btn.pack(side=tk.LEFT)
 
         # Toggle Button
@@ -89,7 +97,7 @@ class HotspotApp:
         self.tree.heading('ip', text='IP Address')
         self.tree.heading('mac', text='MAC Address')
         
-        self.tree.column('name', width=200, stretch=True)
+        self.tree.column('name', width=220, stretch=True)
         self.tree.column('ip', width=120, stretch=False)
         self.tree.column('mac', width=150, stretch=False)
         
@@ -113,15 +121,23 @@ class HotspotApp:
     # --- CORE ---
     def load_config(self):
         default_conf = {"limit": 5, "blacklist": [], "custom_names": {}}
-        if os.path.exists(CONFIG_FILE):
+        if os.path.exists(APP_CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, 'r') as f: return json.load(f)
+                with open(APP_CONFIG_FILE, 'r') as f: return json.load(f)
             except: return default_conf
         return default_conf
+    
+    def get_ssid_info(self):
+        try:
+            with open(WIFI_CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+                return f"SSID: {data.get('ssid', 'Unknown')} | Pass: {data.get('password', '***')}"
+        except:
+            return "Config Error: wifi_config.json not found"
 
     def save_config(self):
         self.config["limit"] = self.limit_var.get()
-        with open(CONFIG_FILE, 'w') as f: json.dump(self.config, f, indent=4)
+        with open(APP_CONFIG_FILE, 'w') as f: json.dump(self.config, f, indent=4)
 
     def run_script(self, args):
         cmd = [SCRIPT_PATH] + args if isinstance(args, list) else [SCRIPT_PATH, args]
@@ -145,28 +161,19 @@ class HotspotApp:
             self.btn_text.set("Nyalakan Hotspot")
             return False
 
-    # --- CUSTOM ERROR DIALOG (COPYABLE) ---
     def show_copyable_error(self, title, message):
         err_win = tk.Toplevel(self.root)
         err_win.title(title)
         err_win.geometry("600x400")
-        
-        # Text Area dengan Scrollbar
         txt_frame = ttk.Frame(err_win)
         txt_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
         txt = tk.Text(txt_frame, wrap="word", height=10)
         txt.pack(side="left", fill="both", expand=True)
-        
         sb = ttk.Scrollbar(txt_frame, orient="vertical", command=txt.yview)
         sb.pack(side="right", fill="y")
         txt.configure(yscrollcommand=sb.set)
-        
         txt.insert("1.0", message)
-        # Agar bisa dicopy, jangan disable total, tapi bind key agar tidak bisa edit
         txt.bind("<Key>", lambda e: "break") 
-        
-        # Button
         ttk.Button(err_win, text="Tutup", command=err_win.destroy).pack(pady=5)
 
     def toggle_hotspot(self):
@@ -196,7 +203,6 @@ class HotspotApp:
                     self.status_label.configure(foreground="orange")
                     self.btn_text.set("Matikan Hotspot")
             else:
-                # [FIX] Panggil custom dialog di main thread
                 self.root.after(0, lambda: self.show_copyable_error("Gagal Menyalakan", f"Error Log:\n{out}"))
                 self.status_var.set("Status: Error")
                 self.check_real_status()

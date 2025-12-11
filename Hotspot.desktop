@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Linux Hotspot Manager
+Comment=My Own Virtual Hotspot Setup
+Exec=/usr/bin/hotspot
+Icon=icon
+Type=Application
+Categories=Network;Settings;
+Terminal=false
+StartupNotify=true

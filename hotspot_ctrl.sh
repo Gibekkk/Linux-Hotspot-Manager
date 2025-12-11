@@ -1,24 +1,29 @@
 #!/bin/bash
 
-# --- KONFIGURASI ---
-MAIN_IF="wlp3s0"
-VIRT_IF="wlp3s1"
-# VIRT_MAC="12:34:56:78:90:ab" # DIMATIKAN: Sering bikin error driver
-NM_PROFILE_NAME="Hotspot-Gibekkk-Profile"
-SSID_NAME="Gibekkk PC"
-WIFI_PASSWORD="ANONYMOUS"
-# -------------------
+# Dapatkan direktori tempat script ini berada
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+WIFI_CONFIG="$SCRIPT_DIR/wifi_config.json"
+
+# Cek apakah jq terinstall
+if ! command -v jq &> /dev/null; then
+    echo "Error: 'jq' belum terinstall. Jalankan: sudo apt install jq"
+    exit 1
+fi
+
+# --- BACA KONFIGURASI DARI JSON ---
+MAIN_IF=$(jq -r '.main_interface' "$WIFI_CONFIG")
+VIRT_IF=$(jq -r '.virt_interface' "$WIFI_CONFIG")
+SSID_NAME=$(jq -r '.ssid' "$WIFI_CONFIG")
+WIFI_PASSWORD=$(jq -r '.password' "$WIFI_CONFIG")
+NM_PROFILE_NAME=$(jq -r '.profile_name' "$WIFI_CONFIG")
+# ----------------------------------
 
 function start_hotspot() {
     echo "Starting..."
     
-    # 1. Cek Koneksi Utama & Ambil Info Channel/Frekuensi
-    # Kita harus tahu apakah induk pakai 2.4GHz atau 5GHz
+    # 1. Cek Koneksi Utama & Ambil Info Channel
     FREQ_INFO=$(iw dev $MAIN_IF info | grep -E "channel|width")
     CURRENT_CHANNEL=$(echo "$FREQ_INFO" | grep channel | awk '{print $2}')
-    
-    # Deteksi Band (a = 5GHz, bg = 2.4GHz)
-    # Jika frekuensi > 5000 MHz, maka mode 'a', jika tidak 'bg'
     CURRENT_FREQ=$(iw dev $MAIN_IF info | grep -oP '(?<=center1: ).*?(?= MHz)' | head -1)
     
     if [ -z "$CURRENT_CHANNEL" ]; then 
@@ -26,6 +31,7 @@ function start_hotspot() {
         exit 1
     fi
 
+    # Deteksi Band (5GHz vs 2.4GHz)
     if [ "$CURRENT_FREQ" -gt 5000 ]; then
         HW_MODE="a"
         echo "Detected 5GHz Network (Channel $CURRENT_CHANNEL)"
@@ -43,12 +49,8 @@ function start_hotspot() {
     fi
     
     # 3. Buat Interface Baru
-    # Kita tidak ubah MAC Address manual via 'ip link' karena sering bikin driver crash.
-    # NetworkManager akan handle random MAC jika diperlukan.
     iw dev $MAIN_IF interface add $VIRT_IF type __ap
     sleep 0.5
-    
-    # Matikan Power Save (PENTING untuk stabilitas)
     iw dev $MAIN_IF set power_save off > /dev/null 2>&1
     ip link set $VIRT_IF up
     sleep 1
@@ -58,12 +60,11 @@ function start_hotspot() {
     
     nmcli con add type wifi ifname $VIRT_IF con-name "$NM_PROFILE_NAME" autoconnect yes ssid "$SSID_NAME" > /dev/null
     
-    # --- SETTINGAN KRUSIAL ---
     nmcli con modify "$NM_PROFILE_NAME" connection.interface-name $VIRT_IF
     nmcli con modify "$NM_PROFILE_NAME" 802-11-wireless.mode ap
     nmcli con modify "$NM_PROFILE_NAME" ipv4.method shared
     
-    # Lock Channel & Band (Wajib sama dengan induk)
+    # Lock Channel & Band
     nmcli con modify "$NM_PROFILE_NAME" 802-11-wireless.band $HW_MODE
     nmcli con modify "$NM_PROFILE_NAME" 802-11-wireless.channel $CURRENT_CHANNEL
     
@@ -71,21 +72,14 @@ function start_hotspot() {
     nmcli con modify "$NM_PROFILE_NAME" wifi-sec.key-mgmt wpa-psk
     nmcli con modify "$NM_PROFILE_NAME" wifi-sec.psk "$WIFI_PASSWORD"
     
-    # [FIX UTAMA] Disable PMF (Protected Management Frames)
-    # Ini penyebab utama HP stuck di "Authenticating" / "Obtaining IP"
+    # Fix Compatibility
     nmcli con modify "$NM_PROFILE_NAME" wifi-sec.pmf disable
-
-    # [FIX MAC] Gunakan fitur NM untuk MAC address virtual, jangan manual
-    # 'preserve' menggunakan MAC asli, 'random' menggunakan acak. 
-    # Jika driver support multi-mac, 'stable' atau 'random' lebih aman.
-    # Jika gagal connect, ubah baris ini jadi 'preserve'
     nmcli con modify "$NM_PROFILE_NAME" wifi.cloned-mac-address random
 
-    # Firewall Rules (DHCP & DNS)
+    # Firewall Rules
     if command -v ufw > /dev/null; then
         ufw allow in on $VIRT_IF > /dev/null 2>&1
         ufw route allow in on $VIRT_IF out on $MAIN_IF > /dev/null 2>&1
-        # Allow DHCP (67/68) and DNS (53)
         ufw allow in on $VIRT_IF to any port 67 proto udp > /dev/null 2>&1
         ufw allow in on $VIRT_IF to any port 68 proto udp > /dev/null 2>&1
         ufw allow in on $VIRT_IF to any port 53 > /dev/null 2>&1
@@ -93,36 +87,29 @@ function start_hotspot() {
 
     # 5. Nyalakan
     nmcli device set $VIRT_IF autoconnect no 2>/dev/null
-    
     OUTPUT=$(nmcli connection up "$NM_PROFILE_NAME" 2>&1)
     
     if [ $? -eq 0 ]; then 
         echo "SUCCESS"
     else 
         echo "FAIL: $OUTPUT"
-        # Cleanup jika gagal
         iw dev $VIRT_IF del > /dev/null 2>&1
     fi
 }
 
 function stop_hotspot() {
     echo "Stopping..."
-    
     if command -v ufw > /dev/null; then
-        # Hapus rule firewall (cleanup sederhana)
         ufw delete allow in on $VIRT_IF > /dev/null 2>&1
         ufw delete route allow in on $VIRT_IF out on $MAIN_IF > /dev/null 2>&1
     fi
-
     nmcli connection delete "$NM_PROFILE_NAME" > /dev/null 2>&1
     ip link set $VIRT_IF down > /dev/null 2>&1
     iw dev $VIRT_IF del > /dev/null 2>&1
-    
     echo "STOPPED"
 }
 
 function check_status() {
-    # Cek apakah interface ada dan punya IP
     if ip link show $VIRT_IF > /dev/null 2>&1; then
          if ip addr show $VIRT_IF | grep -q "inet"; then
              echo "ACTIVE"
@@ -134,13 +121,10 @@ function check_status() {
 
 function list_clients() {
     if ip link show $VIRT_IF > /dev/null 2>&1; then
-        # Gunakan arp scan untuk hasil lebih akurat dibanding station dump saja
-        # Format: MAC|IP|HOSTNAME
         iw dev $VIRT_IF station dump | grep Station | awk '{print $2}' | while read -r mac; do
             ip=$(arp -an -i $VIRT_IF | grep "$mac" | awk '{print $2}' | tr -d '()')
             if [ -z "$ip" ]; then ip="Connecting..."; fi
             
-            # Coba ambil hostname dari file leases dnsmasq NetworkManager
             hostname="Unknown"
             LEASE_FILE=$(find /var/lib/NetworkManager/ -name "*.leases" 2>/dev/null | head -n 1)
             if [ -f "$LEASE_FILE" ]; then
