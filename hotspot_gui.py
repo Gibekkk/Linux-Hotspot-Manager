@@ -7,14 +7,19 @@ import json
 import time
 import fcntl
 import sys
+import logging
 
 # --- KONFIGURASI FILE & PATH ---
-# Menggunakan path relatif agar fleksibel saat diinstall
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_PATH = os.path.join(BASE_DIR, "hotspot_ctrl.sh")
-APP_CONFIG_FILE = os.path.join(BASE_DIR, "app_config.json") # Config Limit/Blacklist
-WIFI_CONFIG_FILE = os.path.join(BASE_DIR, "wifi_config.json") # Config SSID/Pass
+APP_CONFIG_FILE = os.path.join(BASE_DIR, "app_config.json")
+WIFI_CONFIG_FILE = os.path.join(BASE_DIR, "wifi_config.json")
 LOCK_FILE = "/tmp/linux_hotspot.lock"
+LOG_FILE = "/var/log/linux-hotspot-manager.log"
+
+# Setup Logging Python
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, 
+                    format='%(asctime)s [GUI] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 class HotspotApp:
     def __init__(self, root):
@@ -25,8 +30,9 @@ class HotspotApp:
             messagebox.showerror("Error", "Linux Hotspot Manager sudah berjalan!")
             sys.exit(1)
 
+        logging.info("Aplikasi GUI dimulai.")
         self.root = root
-        self.root.title("Linux Hotspot Manager") # Nama Baru
+        self.root.title("Linux Hotspot Manager")
         self.root.geometry("680x520")
         
         style = ttk.Style()
@@ -36,7 +42,8 @@ class HotspotApp:
         self.config = self.load_config()
 
         if os.geteuid() != 0:
-            messagebox.showerror("Error", "Aplikasi ini membutuhkan akses root!\nJalankan dengan: sudo python3 hotspot_gui.py")
+            logging.error("User bukan root. Keluar.")
+            messagebox.showerror("Error", "Aplikasi ini membutuhkan akses root!\nJalankan dengan: sudo linux-hotspot-manager")
             root.destroy()
             return
 
@@ -58,7 +65,6 @@ class HotspotApp:
         self.header = ttk.Label(top_container, text="Wi-Fi Repeater Controller", font=("Helvetica", 16, "bold"))
         self.header.pack(pady=(0, 5))
         
-        # Info SSID (Baca dari wifi_config)
         self.ssid_label = ttk.Label(top_container, text=self.get_ssid_info(), font=("Helvetica", 10), foreground="#555")
         self.ssid_label.pack(pady=(0, 15))
 
@@ -144,7 +150,9 @@ class HotspotApp:
         try:
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             return result.stdout.strip()
-        except Exception as e: return str(e)
+        except Exception as e:
+            logging.error(f"Script Error: {str(e)}")
+            return str(e)
 
     def check_real_status(self):
         output = self.run_script("check")
@@ -161,12 +169,23 @@ class HotspotApp:
             self.btn_text.set("Nyalakan Hotspot")
             return False
 
+    def open_log_file(self):
+        # Coba buka log dengan xdg-open
+        try:
+            subprocess.Popen(['xdg-open', LOG_FILE])
+        except Exception as e:
+            messagebox.showerror("Error", f"Gagal membuka log: {e}")
+
     def show_copyable_error(self, title, message):
         err_win = tk.Toplevel(self.root)
         err_win.title(title)
-        err_win.geometry("600x400")
+        err_win.geometry("600x450")
+        
+        lbl = ttk.Label(err_win, text="Terjadi kesalahan. Silakan cek log untuk detail.", font=("Helvetica", 10, "bold"), foreground="red")
+        lbl.pack(pady=10)
+
         txt_frame = ttk.Frame(err_win)
-        txt_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        txt_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         txt = tk.Text(txt_frame, wrap="word", height=10)
         txt.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(txt_frame, orient="vertical", command=txt.yview)
@@ -174,7 +193,12 @@ class HotspotApp:
         txt.configure(yscrollcommand=sb.set)
         txt.insert("1.0", message)
         txt.bind("<Key>", lambda e: "break") 
-        ttk.Button(err_win, text="Tutup", command=err_win.destroy).pack(pady=5)
+        
+        # Tombol Aksi
+        btn_frame = ttk.Frame(err_win)
+        btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="Lihat Log File", command=self.open_log_file).pack(side=tk.LEFT, padx=10)
+        ttk.Button(btn_frame, text="Tutup", command=err_win.destroy).pack(side=tk.LEFT, padx=10)
 
     def toggle_hotspot(self):
         self.toggle_btn.state(['disabled'])
@@ -182,10 +206,12 @@ class HotspotApp:
 
     def _toggle_thread(self):
         if not self.is_active:
+            logging.info("User menekan tombol START.")
             self.status_var.set("Status: Starting...")
             out = self.run_script("on")
             
             if "SUCCESS" in out:
+                logging.info("Hotspot berhasil menyala.")
                 success_start = False
                 for i in range(15): 
                     self.status_var.set(f"Status: Verifying... ({i+1}/15)")
@@ -203,10 +229,12 @@ class HotspotApp:
                     self.status_label.configure(foreground="orange")
                     self.btn_text.set("Matikan Hotspot")
             else:
-                self.root.after(0, lambda: self.show_copyable_error("Gagal Menyalakan", f"Error Log:\n{out}"))
+                logging.error(f"Gagal menyalakan hotspot. Output: {out}")
+                self.root.after(0, lambda: self.show_copyable_error("Gagal Menyalakan", f"Error Log:\n{out}\n\nCek file log untuk detail lengkap."))
                 self.status_var.set("Status: Error")
                 self.check_real_status()
         else:
+            logging.info("User menekan tombol STOP.")
             self.status_var.set("Status: Stopping...")
             self.run_script("off")
             self.is_active = False
@@ -245,6 +273,7 @@ class HotspotApp:
         sel = self.tree.selection()
         if not sel: return
         mac = self.tree.item(sel)['values'][2]
+        logging.info(f"User kick device: {mac}")
         self.run_script(["kick", mac])
 
     def blacklist_selected(self):
@@ -252,6 +281,7 @@ class HotspotApp:
         if not sel: return
         mac = self.tree.item(sel)['values'][2]
         if messagebox.askyesno("Blacklist", f"Blokir permanen {mac}?"):
+            logging.info(f"User blacklist device: {mac}")
             if mac not in self.config["blacklist"]:
                 self.config["blacklist"].append(mac)
                 self.save_config()
@@ -289,6 +319,7 @@ class HotspotApp:
             if not sel: return
             item = bl_tree.item(sel)
             mac = item['values'][1]
+            logging.info(f"User remove blacklist: {mac}")
             self.config["blacklist"].remove(mac)
             self.save_config()
             bl_tree.delete(sel)
@@ -328,6 +359,7 @@ class HotspotApp:
         limit = self.limit_var.get()
         if len(current_clients) > limit:
             victim = current_clients[-1]
+            logging.info(f"Limit reached ({limit}). Kicking: {victim[2]}")
             self.run_script(["kick", victim[2]])
             current_clients.pop()
 

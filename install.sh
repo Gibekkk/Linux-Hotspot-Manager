@@ -9,18 +9,18 @@ fi
 # --- KONFIGURASI PATH ---
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALL_DIR="/opt/linux-hotspot-manager"
-BIN_PATH="/usr/bin/hotspot"
-UNINSTALLER_PATH="/usr/bin/hotspot-uninstall"
+BIN_PATH="/usr/bin/linux-hotspot-manager"
 DESKTOP_SRC="$CURRENT_DIR/Hotspot.desktop"
+LOG_FILE="/var/log/linux-hotspot-manager.log"
 
-# Deteksi Icon (Mencari png atau jpeg/jpg)
+# Deteksi Icon
 ICON_SRC=$(find "$CURRENT_DIR" -maxdepth 1 -name "icon.png" -o -name "icon.jpeg" -o -name "icon.jpg" | head -n 1)
 
 echo "=== INSTALLER LINUX HOTSPOT MANAGER ==="
 
 # 1. Cek Kelengkapan File Sumber
 if [[ ! -f "$CURRENT_DIR/hotspot_gui.py" || ! -f "$CURRENT_DIR/hotspot_ctrl.sh" ]]; then
-    echo "Error: File instalasi tidak lengkap (hotspot_gui.py atau hotspot_ctrl.sh hilang)."
+    echo "Error: File instalasi tidak lengkap."
     exit 1
 fi
 
@@ -30,7 +30,7 @@ apt-get update -qq
 apt-get install -y python3-tk dnsmasq-base jq iw network-manager ufw policykit-1
 
 # 3. Setup Direktori Sistem
-echo "[2/7] Membuat direktori aplikasi di $INSTALL_DIR..."
+echo "[2/7] Membuat direktori aplikasi..."
 mkdir -p "$INSTALL_DIR"
 
 # 4. Konfigurasi Interface Wi-Fi
@@ -58,7 +58,6 @@ cat > "$INSTALL_DIR/wifi_config.json" <<EOF
 }
 EOF
 
-# Buat app_config.json default
 cat > "$INSTALL_DIR/app_config.json" <<EOF
 {
     "limit": 5,
@@ -72,33 +71,22 @@ echo "[4/7] Menyalin file aplikasi..."
 cp "$CURRENT_DIR/hotspot_gui.py" "$INSTALL_DIR/"
 cp "$CURRENT_DIR/hotspot_ctrl.sh" "$INSTALL_DIR/"
 
-# Handling Icon (Rename jadi standar 'app_icon.png' di tujuan agar mudah)
+# Handling Icon
 if [ -n "$ICON_SRC" ]; then
-    echo "Icon ditemukan: $ICON_SRC"
     cp "$ICON_SRC" "$INSTALL_DIR/app_icon.png"
-else
-    echo "Warning: Icon tidak ditemukan. Menggunakan icon default sistem."
 fi
 
 # Handling Desktop Entry
 if [ -f "$DESKTOP_SRC" ]; then
     TARGET_DESKTOP="/usr/share/applications/linux-hotspot-manager.desktop"
     cp "$DESKTOP_SRC" "$TARGET_DESKTOP"
-    
-    # MODIFIKASI OTOMATIS FILE DESKTOP
-    # 1. Pastikan Exec mengarah ke /usr/bin/hotspot
     sed -i "s|^Exec=.*|Exec=$BIN_PATH|" "$TARGET_DESKTOP"
-    
-    # 2. Pastikan Icon mengarah ke /opt/.../app_icon.png
     if [ -n "$ICON_SRC" ]; then
         sed -i "s|^Icon=.*|Icon=$INSTALL_DIR/app_icon.png|" "$TARGET_DESKTOP"
     else
         sed -i "s|^Icon=.*|Icon=network-wireless-hotspot|" "$TARGET_DESKTOP"
     fi
-    
     chmod 644 "$TARGET_DESKTOP"
-else
-    echo "Warning: Hotspot.desktop tidak ditemukan."
 fi
 
 # Set Permissions
@@ -106,38 +94,22 @@ chmod +x "$INSTALL_DIR/hotspot_ctrl.sh"
 chown -R root:root "$INSTALL_DIR"
 chmod 755 "$INSTALL_DIR"
 
-# 6. Membuat Wrapper Binary (/usr/bin/hotspot)
-echo "[5/7] Membuat command 'hotspot'..."
-cat > "$BIN_PATH" <<EOF
-#!/bin/bash
-if [ -z "\$DISPLAY" ]; then
-    echo "Error: Aplikasi ini membutuhkan GUI."
-    exit 1
-fi
-pkexec env DISPLAY=\$DISPLAY XAUTHORITY=\$XAUTHORITY python3 $INSTALL_DIR/hotspot_gui.py
-EOF
-chmod +x "$BIN_PATH"
+# Setup Log File (Create empty file)
+touch "$LOG_FILE"
+chmod 666 "$LOG_FILE" # Allow write
+echo "$(date) - Installed" > "$LOG_FILE"
 
-# 7. Membuat Uninstaller (/usr/bin/hotspot-uninstall)
-echo "[6/7] Membuat uninstaller..."
-cat > "$UNINSTALLER_PATH" <<EOF
+# 6. Membuat Script Uninstaller Internal
+echo "[5/7] Membuat script uninstaller internal..."
+cat > "$INSTALL_DIR/uninstall.sh" <<EOF
 #!/bin/bash
-# Uninstaller Linux Hotspot Manager
-
-if [ "\$EUID" -ne 0 ]; then
-  echo "Mohon jalankan sebagai root: sudo hotspot-uninstall"
-  exit
-fi
+# Internal Uninstaller Script
 
 echo "Mempersiapkan uninstall..."
 
-# --- STEP PENTING: MATIKAN HOTSPOT DULU ---
 if [ -f "$INSTALL_DIR/hotspot_ctrl.sh" ]; then
-    echo "Memastikan hotspot mati..."
-    # Panggil fungsi off dari script controller
+    echo "Mematikan hotspot..."
     bash "$INSTALL_DIR/hotspot_ctrl.sh" off > /dev/null 2>&1
-    
-    # Double check: Hapus interface virtual paksa jika masih nyangkut
     VIRT_IF=\$(jq -r '.virt_interface' "$INSTALL_DIR/wifi_config.json" 2>/dev/null)
     if [ ! -z "\$VIRT_IF" ]; then
         ip link set \$VIRT_IF down 2>/dev/null
@@ -145,29 +117,48 @@ if [ -f "$INSTALL_DIR/hotspot_ctrl.sh" ]; then
     fi
     sleep 2
 fi
-# ------------------------------------------
 
 echo "Menghapus file aplikasi..."
-rm -rf "$INSTALL_DIR"
 rm -f "$BIN_PATH"
 rm -f "/usr/share/applications/linux-hotspot-manager.desktop"
+rm -f "$LOG_FILE"
+rm -rf "$INSTALL_DIR"
 
-# Hapus diri sendiri
-rm -f "\$0"
-
-echo "Uninstall selesai. Semua bersih."
+echo "Uninstall selesai."
 EOF
-chmod +x "$UNINSTALLER_PATH"
+chmod +x "$INSTALL_DIR/uninstall.sh"
+
+# 7. Membuat Wrapper Binary
+echo "[6/7] Membuat command '$BIN_PATH'..."
+cat > "$BIN_PATH" <<EOF
+#!/bin/bash
+INSTALL_DIR="$INSTALL_DIR"
+case "\$1" in
+  --uninstall) pkexec "\$INSTALL_DIR/uninstall.sh" ;;
+  --on) echo "Menyalakan hotspot..."; pkexec "\$INSTALL_DIR/hotspot_ctrl.sh" on ;;
+  --off) echo "Mematikan hotspot..."; pkexec "\$INSTALL_DIR/hotspot_ctrl.sh" off ;;
+  *)
+    if [ -z "\$DISPLAY" ]; then
+        echo "Error: GUI membutuhkan X11/Wayland."
+        exit 1
+    fi
+    pkexec env DISPLAY=\$DISPLAY XAUTHORITY=\$XAUTHORITY python3 "\$INSTALL_DIR/hotspot_gui.py"
+    ;;
+esac
+EOF
+chmod +x "$BIN_PATH"
 
 echo ""
 echo "=== INSTALASI SUKSES ==="
-echo "Jalankan dengan perintah: hotspot"
-echo "Atau cari di menu aplikasi: Linux Hotspot Manager"
-echo "Untuk menghapus aplikasi: sudo hotspot-uninstall"
+echo "Log file tersedia di: $LOG_FILE"
 echo ""
-echo "[7/7] Membersihkan file installer..."
 
-# 8. Self-Destruct (Menghapus folder tempat installer ini berada)
-rm -rf "$CURRENT_DIR"
+# 8. Prompt Hapus Installer
+echo "[7/7] Pembersihan"
+read -p "Apakah Anda ingin menghapus file installer ini? (y/n): " confirm
+if [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]]; then
+    rm -rf "$CURRENT_DIR"
+    echo "File installer dihapus."
+fi
 
 exit 0
