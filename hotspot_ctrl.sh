@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- KONFIGURASI PATH ABSOLUT ---
-# Kita kunci ke /opt agar tidak error saat dijalankan dari wrapper/sudo
+# Menggunakan path absolut agar aman saat dipanggil dari mana saja (sudo/cron/wrapper)
 BASE_DIR="/opt/linux-hotspot-manager"
 WIFI_CONFIG="$BASE_DIR/wifi_config.json"
 LOG_FILE="/var/log/linux-hotspot-manager.log"
@@ -20,7 +20,7 @@ fi
 # Cek keberadaan Config
 if [ ! -f "$WIFI_CONFIG" ]; then
     log "CRITICAL: Config file not found at $WIFI_CONFIG"
-    echo "Error: Config file hilang. Jalankan --config untuk setup ulang."
+    echo "Error: Config file hilang di $WIFI_CONFIG"
     exit 1
 fi
 
