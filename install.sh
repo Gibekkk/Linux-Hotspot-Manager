@@ -1,14 +1,14 @@
 #!/bin/bash
 
-# --- AUTO SUDO (Untuk Installer) ---
+# --- 1. STRICT ROOT CHECK (Tanpa Auto-Sudo) ---
 if [ "$EUID" -ne 0 ]; then
-    echo "Meminta akses root untuk instalasi..."
-    exec sudo "$0" "$@"
-    exit $?
+  echo "ERROR: Script ini WAJIB dijalankan sebagai root."
+  echo "Silakan jalankan ulang dengan: sudo bash install.sh"
+  exit 1
 fi
 
 # --- KONFIGURASI UTAMA ---
-APP_VERSION="1.22" # Pastikan ini diubah setiap rilis baru
+APP_VERSION="1.24" # Versi Installer Ini
 # -------------------------
 
 # --- KONFIGURASI PATH ---
@@ -39,10 +39,10 @@ apt-get install -y python3-tk python3-pil.imagetk dnsmasq-base jq iw network-man
 echo "[2/8] Membuat direktori aplikasi..."
 mkdir -p "$INSTALL_DIR"
 
-# PENTING: Tulis versi installer saat ini ke sistem
+# PENTING: Paksa tulis versi 1.24 ke file lokal
 echo "$APP_VERSION" > "$INSTALL_DIR/version.txt"
 
-# 4. Konfigurasi Interface Wi-Fi (SMART INPUT)
+# 4. Konfigurasi Interface Wi-Fi
 echo "[3/8] Konfigurasi Jaringan..."
 
 if [ -f "$INSTALL_DIR/wifi_config.json" ]; then
@@ -140,9 +140,8 @@ echo "[6/8] Membuat uninstaller..."
 cat > "$INSTALL_DIR/uninstall.sh" <<EOF
 #!/bin/bash
 if [ "\$EUID" -ne 0 ]; then
-    echo "Meminta akses root untuk uninstall..."
-    exec sudo "\$0" "\$@"
-    exit \$?
+    echo "ERROR: Uninstall butuh akses root (sudo)."
+    exit 1
 fi
 
 echo "Mempersiapkan uninstall..."
@@ -164,7 +163,7 @@ echo "Uninstall selesai. Sistem bersih."
 EOF
 chmod +x "$INSTALL_DIR/uninstall.sh"
 
-# 7. WRAPPER BINARY (FIXED VERSION CHECK & NETWORK EXCEPTION)
+# 7. WRAPPER BINARY (ANTI-CACHE & STRICT SUDO)
 echo "[7/8] Membuat command '$BIN_PATH'..."
 rm -f "$BIN_PATH"
 
@@ -181,8 +180,9 @@ LOG_FILE="/var/log/linux-hotspot-manager.log"
 
 require_root() {
     if [ "$EUID" -ne 0 ]; then
-        exec sudo "$0" "$@"
-        exit $?
+        echo "ERROR: Perintah ini membutuhkan akses root."
+        echo "Silakan jalankan dengan: sudo linux-hotspot-manager $1 ..."
+        exit 1
     fi
 }
 
@@ -195,8 +195,8 @@ get_local_version() {
 }
 
 get_remote_version() {
-    # Anti-Cache: Tambahkan parameter waktu agar tidak dapat cache lama
-    # Exception Handling: Max time 5 detik
+    # Anti-Cache: Tambahkan parameter waktu (?t=timestamp)
+    # Ini memaksa GitHub memberikan file terbaru, bukan cache
     curl -s --max-time 5 "${REPO_RAW}/version.txt?t=$(date +%s)" | tr -d ' \n\r'
 }
 
@@ -204,21 +204,17 @@ check_update_available() {
     LOCAL_VER=$(get_local_version)
     REMOTE_VER=$(get_remote_version)
     
-    # Exception: Jika kosong atau error curl
     if [ -z "$REMOTE_VER" ] || [[ "$REMOTE_VER" == *"404"* ]]; then
-        # Silent fail jika hanya cek startup
-        return
+        return # Silent fail
     fi
     
     if [ "$LOCAL_VER" != "$REMOTE_VER" ]; then
-        # Cek apakah lokal lebih baru (Dev version)
-        # Logika sederhana string compare
+        # Cek jika lokal lebih tinggi (Dev version)
         if [[ "$LOCAL_VER" > "$REMOTE_VER" ]]; then
-             # Lokal lebih baru, abaikan
              return
         fi
         echo -e "\033[1;33m[UPDATE TERSEDIA]\033[0m Versi GitHub: $REMOTE_VER (Lokal: $LOCAL_VER)"
-        echo "Jalankan: linux-hotspot-manager --update"
+        echo "Jalankan: sudo linux-hotspot-manager --update"
     fi
 }
 
@@ -317,14 +313,8 @@ case "$1" in
         LOCAL_VER=$(get_local_version)
         REMOTE_VER=$(get_remote_version)
         
-        # Exception Handling: Jaringan Error
-        if [ -z "$REMOTE_VER" ]; then
-            echo "Error: Gagal terhubung ke GitHub. Periksa koneksi internet."
-            exit 1
-        fi
-        
-        if [[ "$REMOTE_VER" == *"404"* ]]; then
-            echo "Error: File versi tidak ditemukan di Repository GitHub."
+        if [ -z "$REMOTE_VER" ] || [[ "$REMOTE_VER" == *"404"* ]]; then
+            echo "Error: Gagal terhubung ke GitHub."
             exit 1
         fi
         
@@ -354,15 +344,15 @@ case "$1" in
             bash "$INSTALL_DIR/hotspot_ctrl.sh" off
         fi
         
-        # Download Core Files (Cache Busting)
+        # Download Core Files (Anti-Cache)
         curl -s "${REPO_RAW}/hotspot_ctrl.sh?t=$(date +%s)" -o "$INSTALL_DIR/hotspot_ctrl.sh"
         curl -s "${REPO_RAW}/hotspot_gui.py?t=$(date +%s)" -o "$INSTALL_DIR/hotspot_gui.py"
         
-        # Update Version File Lokal
+        # UPDATE VERSION FILE LOKAL (PENTING)
         echo "$REMOTE_VER" > "$VERSION_FILE"
+        
         chmod +x "$INSTALL_DIR/hotspot_ctrl.sh"
 
-        # Cek Dependencies Baru
         REQ_URL="${REPO_RAW}/requirements.txt?t=$(date +%s)"
         if curl --output /dev/null --silent --head --fail "$REQ_URL"; then
             echo "Mengupdate dependencies..."
