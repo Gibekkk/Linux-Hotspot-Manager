@@ -7,7 +7,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # --- KONFIGURASI UTAMA ---
-APP_VERSION="1.4"
+APP_VERSION="1.20" 
 # -------------------------
 
 # --- KONFIGURASI PATH ---
@@ -25,7 +25,7 @@ echo "=== INSTALLER LINUX HOTSPOT MANAGER V$APP_VERSION ==="
 
 # 1. Cek Kelengkapan File Sumber
 if [[ ! -f "$CURRENT_DIR/hotspot_gui.py" || ! -f "$CURRENT_DIR/hotspot_ctrl.sh" ]]; then
-    echo "Error: File instalasi tidak lengkap."
+    echo "Error: File instalasi tidak lengkap (hotspot_gui.py atau hotspot_ctrl.sh hilang)."
     exit 1
 fi
 
@@ -37,23 +37,71 @@ apt-get install -y python3-tk python3-pil.imagetk dnsmasq-base jq iw network-man
 # 3. Setup Direktori Sistem
 echo "[2/8] Membuat direktori aplikasi..."
 mkdir -p "$INSTALL_DIR"
+# Tulis Version File
 echo "$APP_VERSION" > "$INSTALL_DIR/version.txt"
 
-# 4. Konfigurasi Interface Wi-Fi
+# 4. Konfigurasi Interface Wi-Fi (SMART INPUT)
+echo "[3/8] Konfigurasi Jaringan..."
 echo "---------------------------------------"
 echo "Daftar Interface Wi-Fi Anda:"
 iw dev | awk '$1=="Interface"{print $2}'
 echo "---------------------------------------"
 
-read -p "Masukkan Interface UTAMA (sumber internet, misal wlp3s0): " MAIN_IF
-read -p "Masukkan Interface VIRTUAL (untuk hotspot, misal wlp3s1): " VIRT_IF
-read -p "Masukkan Nama Hotspot (SSID): " SSID_INPUT
-read -p "Masukkan Password Hotspot (min 8 char): " PASS_INPUT
+# --- LOGIKA INPUT OTOMATIS/VALIDASI ---
 
-if [ -z "$SSID_INPUT" ]; then SSID_INPUT="Linux Hotspot"; fi
-if [ -z "$PASS_INPUT" ]; then PASS_INPUT="12345678"; fi
+# A. Main Interface (Sumber Internet)
+# Coba deteksi interface yang punya default route
+AUTO_MAIN=$(ip route | grep default | awk '{print $5}' | head -n1)
+while true; do
+    if [ -n "$AUTO_MAIN" ]; then
+        read -p "Main Interface (Default: $AUTO_MAIN): " INPUT_MAIN
+        MAIN_IF=${INPUT_MAIN:-$AUTO_MAIN}
+    else
+        read -p "Main Interface (wajib diisi): " MAIN_IF
+    fi
+    
+    # Validasi
+    if [ -n "$MAIN_IF" ]; then
+        # Cek apakah interface benar-benar ada
+        if ip link show "$MAIN_IF" >/dev/null 2>&1; then
+            break
+        else
+            echo "Error: Interface '$MAIN_IF' tidak ditemukan di sistem. Coba lagi."
+        fi
+    else
+        echo "Error: Interface tidak boleh kosong."
+    fi
+done
 
-echo "[3/8] Membuat konfigurasi..."
+# B. Virtual Interface
+while true; do
+    read -p "Virtual Interface (Default: wlan_ap): " INPUT_VIRT
+    VIRT_IF=${INPUT_VIRT:-"wlan_ap"}
+    
+    if [ "$VIRT_IF" == "$MAIN_IF" ]; then
+        echo "Error: Virtual Interface tidak boleh sama dengan Main Interface."
+    elif [ -n "$VIRT_IF" ]; then
+        break
+    fi
+done
+
+# C. SSID
+read -p "Nama Hotspot (Default: Linux Hotspot): " INPUT_SSID
+SSID_INPUT=${INPUT_SSID:-"Linux Hotspot"}
+
+# D. Password
+while true; do
+    read -p "Password (Default: 12345678): " INPUT_PASS
+    PASS_INPUT=${INPUT_PASS:-"12345678"}
+    
+    if [ ${#PASS_INPUT} -ge 8 ]; then
+        break
+    else
+        echo "Error: Password minimal 8 karakter."
+    fi
+done
+
+echo "[4/8] Menyimpan konfigurasi..."
 cat > "$INSTALL_DIR/wifi_config.json" <<EOF
 {
     "main_interface": "$MAIN_IF",
@@ -64,6 +112,8 @@ cat > "$INSTALL_DIR/wifi_config.json" <<EOF
 }
 EOF
 
+# Default App Config
+if [ ! -f "$INSTALL_DIR/app_config.json" ]; then
 cat > "$INSTALL_DIR/app_config.json" <<EOF
 {
     "limit": 5,
@@ -71,9 +121,10 @@ cat > "$INSTALL_DIR/app_config.json" <<EOF
     "custom_names": {}
 }
 EOF
+fi
 
 # 5. Menyalin File Aplikasi
-echo "[4/8] Menyalin file aplikasi..."
+echo "[5/8] Menyalin file aplikasi..."
 cp "$CURRENT_DIR/hotspot_gui.py" "$INSTALL_DIR/"
 cp "$CURRENT_DIR/hotspot_ctrl.sh" "$INSTALL_DIR/"
 
@@ -93,16 +144,18 @@ if [ -f "$DESKTOP_SRC" ]; then
     chmod 644 "$TARGET_DESKTOP"
 fi
 
+# Set Permissions
 chmod +x "$INSTALL_DIR/hotspot_ctrl.sh"
 chown -R root:root "$INSTALL_DIR"
 chmod 755 "$INSTALL_DIR"
 
+# Init Log
 touch "$LOG_FILE"
 chmod 666 "$LOG_FILE"
 echo "$(date) - Installed V$APP_VERSION" > "$LOG_FILE"
 
 # 6. Script Uninstaller
-echo "[5/8] Membuat script uninstaller internal..."
+echo "[6/8] Membuat uninstaller..."
 cat > "$INSTALL_DIR/uninstall.sh" <<EOF
 #!/bin/bash
 echo "Mempersiapkan uninstall..."
@@ -122,8 +175,12 @@ echo "Uninstall selesai."
 EOF
 chmod +x "$INSTALL_DIR/uninstall.sh"
 
-# 7. WRAPPER BINARY (AUTO-SUDO & LOG VIEW)
-echo "[6/8] Membuat command '$BIN_PATH'..."
+# 7. WRAPPER BINARY (FIXED LOGIC)
+echo "[7/8] Membuat command '$BIN_PATH'..."
+
+# Hapus binary lama dulu agar bersih
+rm -f "$BIN_PATH"
+
 cat > "$BIN_PATH" << 'EOF_WRAPPER'
 #!/bin/bash
 
@@ -136,8 +193,7 @@ LOG_FILE="/var/log/linux-hotspot-manager.log"
 # --- AUTO SUDO FUNCTION ---
 require_root() {
     if [ "$EUID" -ne 0 ]; then
-        # Jika bukan root, jalankan ulang diri sendiri dengan sudo
-        # "$0" adalah nama script ini, "$@" adalah semua argumen yang diberikan
+        # Re-run with sudo, preserving arguments exactly
         exec sudo "$0" "$@"
         exit $?
     fi
@@ -160,17 +216,18 @@ check_update_available() {
 
 # --- MAIN LOGIC ---
 
-if [ -z "$1" ]; then
+# Jika tidak ada argumen sama sekali, buka GUI
+if [ $# -eq 0 ]; then
     check_update_available
     if [ -z "$DISPLAY" ]; then
         echo "Error: GUI butuh X11/Wayland. Gunakan --help."
         exit 1
     fi
-    # GUI tetap pakai pkexec karena lebih ramah untuk aplikasi window
     pkexec env DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY python3 "$INSTALL_DIR/hotspot_gui.py"
     exit 0
 fi
 
+# Parsing Argumen
 case "$1" in
     --on)
         require_root
@@ -185,8 +242,6 @@ case "$1" in
         ;;
 
     --log)
-        # Tidak butuh root untuk baca log jika permissionnya 666 (diatur installer)
-        # Gunakan 'less' untuk scroll dan 'q' untuk keluar
         if [ -f "$LOG_FILE" ]; then
             less +G "$LOG_FILE"
         else
@@ -220,10 +275,21 @@ case "$1" in
         if [ -z "$1" ]; then
             echo "--- KONFIGURASI ULANG ---"
             iw dev | awk '$1=="Interface"{print $2}'
-            read -p "Main Interface: " MAIN_IF
-            read -p "Virtual Interface: " VIRT_IF
-            read -p "SSID: " SSID
-            read -p "Password: " PASS
+            
+            # Smart Input Logic for CLI Config
+            AUTO_MAIN=$(ip route | grep default | awk '{print $5}' | head -n1)
+            read -p "Main Interface ($AUTO_MAIN): " MAIN_IF
+            MAIN_IF=${MAIN_IF:-$AUTO_MAIN}
+            
+            read -p "Virtual Interface (wlan_ap): " VIRT_IF
+            VIRT_IF=${VIRT_IF:-"wlan_ap"}
+            
+            read -p "SSID (Linux Hotspot): " SSID
+            SSID=${SSID:-"Linux Hotspot"}
+            
+            read -p "Password (12345678): " PASS
+            PASS=${PASS:-"12345678"}
+            
             tmp=$(mktemp)
             jq --arg m "$MAIN_IF" --arg v "$VIRT_IF" --arg s "$SSID" --arg p "$PASS" \
                '.main_interface=$m | .virt_interface=$v | .ssid=$s | .password=$p' \
@@ -329,17 +395,19 @@ chmod +x "$BIN_PATH"
 
 echo ""
 echo "=== INSTALASI SUKSES ==="
-echo "Cobalah perintah tanpa sudo (otomatis minta password):"
-echo "  linux-hotspot-manager --status"
-echo "  linux-hotspot-manager --log"
+echo "Jalankan linux-hotspot-manager --help untuk informasi lebih lanjut."
 echo ""
 
-# 8. Prompt Hapus Installer
+# 8. Prompt Hapus Installer (Default Yes)
 echo "[8/8] Pembersihan"
-read -p "Hapus file installer ini? (y/n): " confirm
+read -p "Hapus file installer ini? (Y/n): " confirm
+confirm=${confirm:-Y} # Default to Y if empty
+
 if [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]]; then
     rm -rf "$CURRENT_DIR"
     echo "File installer dihapus."
+else
+    echo "File installer disimpan."
 fi
 
 exit 0
