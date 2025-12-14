@@ -14,10 +14,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_PATH = os.path.join(BASE_DIR, "hotspot_ctrl.sh")
 APP_CONFIG_FILE = os.path.join(BASE_DIR, "app_config.json")
 WIFI_CONFIG_FILE = os.path.join(BASE_DIR, "wifi_config.json")
+VERSION_FILE = os.path.join(BASE_DIR, "version.txt")
 LOCK_FILE = "/tmp/linux_hotspot.lock"
 LOG_FILE = "/var/log/linux-hotspot-manager.log"
+QR_TEMP_FILE = "/tmp/hotspot_qr.png"
 
-# Setup Logging Python
+# Setup Logging
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, 
                     format='%(asctime)s [GUI] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
@@ -32,8 +34,11 @@ class HotspotApp:
 
         logging.info("Aplikasi GUI dimulai.")
         self.root = root
-        self.root.title("Linux Hotspot Manager")
-        self.root.geometry("680x520")
+        
+        # Ambil Versi
+        self.app_version = self.get_version()
+        self.root.title(f"Linux Hotspot Manager V{self.app_version}")
+        self.root.geometry("680x550")
         
         style = ttk.Style()
         style.configure("Overlay.TFrame", background="#f0f0f0") 
@@ -56,7 +61,7 @@ class HotspotApp:
         footer_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
         self.count_var = tk.StringVar(value="Total: 0")
         ttk.Label(footer_frame, textvariable=self.count_var, font=("Helvetica", 9)).pack(side=tk.RIGHT)
-        ttk.Label(footer_frame, text="Linux Hotspot Manager", font=("Helvetica", 9, "italic"), foreground="gray").pack(side=tk.LEFT)
+        ttk.Label(footer_frame, text=f"Linux Hotspot Manager V{self.app_version}", font=("Helvetica", 9, "italic"), foreground="gray").pack(side=tk.LEFT)
 
         # Header
         top_container = ttk.Frame(main_frame)
@@ -65,8 +70,15 @@ class HotspotApp:
         self.header = ttk.Label(top_container, text="Wi-Fi Repeater Controller", font=("Helvetica", 16, "bold"))
         self.header.pack(pady=(0, 5))
         
-        self.ssid_label = ttk.Label(top_container, text=self.get_ssid_info(), font=("Helvetica", 10), foreground="#555")
-        self.ssid_label.pack(pady=(0, 15))
+        # Info SSID & QR Button
+        info_frame = ttk.Frame(top_container)
+        info_frame.pack(pady=(0, 15))
+        
+        self.ssid_label = ttk.Label(info_frame, text=self.get_ssid_info(), font=("Helvetica", 10), foreground="#555")
+        self.ssid_label.pack(side=tk.LEFT, padx=5)
+        
+        self.qr_btn = ttk.Button(info_frame, text="Show QR", width=8, command=self.show_qr_code)
+        self.qr_btn.pack(side=tk.LEFT, padx=5)
 
         # Status & Settings
         ctrl_frame = ttk.Frame(top_container)
@@ -125,6 +137,13 @@ class HotspotApp:
         self.check_clients_loop()
 
     # --- CORE ---
+    def get_version(self):
+        if os.path.exists(VERSION_FILE):
+            try:
+                with open(VERSION_FILE, 'r') as f: return f.read().strip()
+            except: return "1.0"
+        return "1.0"
+
     def load_config(self):
         default_conf = {"limit": 5, "blacklist": [], "custom_names": {}}
         if os.path.exists(APP_CONFIG_FILE):
@@ -139,7 +158,7 @@ class HotspotApp:
                 data = json.load(f)
                 return f"SSID: {data.get('ssid', 'Unknown')} | Pass: {data.get('password', '***')}"
         except:
-            return "Config Error: wifi_config.json not found"
+            return "Config Error"
 
     def save_config(self):
         self.config["limit"] = self.limit_var.get()
@@ -168,9 +187,48 @@ class HotspotApp:
             self.status_label.configure(foreground="red")
             self.btn_text.set("Nyalakan Hotspot")
             return False
+            
+    # --- QR CODE FEATURE ---
+    def show_qr_code(self):
+        try:
+            with open(WIFI_CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+                ssid = data.get('ssid')
+                password = data.get('password')
+                
+            if not ssid or not password:
+                messagebox.showerror("Error", "Config tidak valid.")
+                return
+
+            # Format String WiFi: WIFI:T:WPA;S:MySSID;P:MyPassword;;
+            # Gunakan qrencode (CLI tool) untuk generate PNG
+            qr_string = f"WIFI:T:WPA;S:{ssid};P:{password};;"
+            cmd = ["qrencode", "-o", QR_TEMP_FILE, "-s", "6", "-l", "M", qr_string]
+            
+            subprocess.run(cmd, check=True)
+            
+            # Tampilkan di Window Baru
+            qr_win = tk.Toplevel(self.root)
+            qr_win.title("Scan to Connect")
+            qr_win.geometry("300x350")
+            
+            # Load Image
+            img = tk.PhotoImage(file=QR_TEMP_FILE)
+            
+            lbl_img = ttk.Label(qr_win, image=img)
+            lbl_img.image = img # Keep reference
+            lbl_img.pack(pady=20)
+            
+            ttk.Label(qr_win, text=f"SSID: {ssid}", font=("Helvetica", 10, "bold")).pack()
+            ttk.Label(qr_win, text=f"Pass: {password}", font=("Helvetica", 9)).pack()
+            ttk.Button(qr_win, text="Tutup", command=qr_win.destroy).pack(pady=10)
+            
+        except FileNotFoundError:
+             messagebox.showerror("Error", "Tool 'qrencode' belum terinstall.\nSilakan update aplikasi.")
+        except Exception as e:
+             messagebox.showerror("Error", f"Gagal generate QR: {e}")
 
     def open_log_file(self):
-        # Coba buka log dengan xdg-open
         try:
             subprocess.Popen(['xdg-open', LOG_FILE])
         except Exception as e:
@@ -194,7 +252,6 @@ class HotspotApp:
         txt.insert("1.0", message)
         txt.bind("<Key>", lambda e: "break") 
         
-        # Tombol Aksi
         btn_frame = ttk.Frame(err_win)
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Lihat Log File", command=self.open_log_file).pack(side=tk.LEFT, padx=10)

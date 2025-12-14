@@ -6,13 +6,16 @@ if [ "$EUID" -ne 0 ]; then
   exit
 fi
 
+# --- KONFIGURASI UTAMA ---
+APP_VERSION="1.2"  # <--- GANTI VERSI DI SINI
+# -------------------------
+
 # --- KONFIGURASI PATH ---
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALL_DIR="/opt/linux-hotspot-manager"
 BIN_PATH="/usr/bin/linux-hotspot-manager"
 DESKTOP_SRC="$CURRENT_DIR/Hotspot.desktop"
 LOG_FILE="/var/log/linux-hotspot-manager.log"
-APP_VERSION="1.0" # Versi saat ini
 REPO_RAW_URL="https://raw.githubusercontent.com/Gibekkk/Linux-Hotspot-Manager/main"
 
 # Deteksi Icon
@@ -27,15 +30,16 @@ if [[ ! -f "$CURRENT_DIR/hotspot_gui.py" || ! -f "$CURRENT_DIR/hotspot_ctrl.sh" 
 fi
 
 # 2. Install Dependencies
+# Menambahkan 'qrencode' untuk fitur QR dan 'python3-pil.imagetk' untuk display gambar
 echo "[1/8] Menginstall dependencies..."
 apt-get update -qq
-apt-get install -y python3-tk dnsmasq-base jq iw network-manager ufw policykit-1 curl
+apt-get install -y python3-tk python3-pil.imagetk dnsmasq-base jq iw network-manager ufw policykit-1 curl qrencode
 
 # 3. Setup Direktori Sistem
 echo "[2/8] Membuat direktori aplikasi..."
 mkdir -p "$INSTALL_DIR"
 
-# Simpan Versi Lokal
+# Simpan Versi ke File agar bisa dibaca GUI
 echo "$APP_VERSION" > "$INSTALL_DIR/version.txt"
 
 # 4. Konfigurasi Interface Wi-Fi
@@ -125,7 +129,7 @@ echo "Uninstall selesai."
 EOF
 chmod +x "$INSTALL_DIR/uninstall.sh"
 
-# 7. MEMBUAT WRAPPER BINARY CANGGIH
+# 7. MEMBUAT WRAPPER BINARY
 echo "[6/8] Membuat command '$BIN_PATH'..."
 cat > "$BIN_PATH" << 'EOF_WRAPPER'
 #!/bin/bash
@@ -202,7 +206,7 @@ case "$1" in
         shift # Hapus --config dari argumen
         
         if [ -z "$1" ]; then
-            # Mode Interaktif (Tanya Ulang Semua)
+            # Mode Interaktif
             echo "--- KONFIGURASI ULANG ---"
             echo "Interface saat ini:"
             iw dev | awk '$1=="Interface"{print $2}'
@@ -213,7 +217,6 @@ case "$1" in
             read -p "SSID: " SSID
             read -p "Password: " PASS
             
-            # Update JSON
             tmp=$(mktemp)
             jq --arg m "$MAIN_IF" --arg v "$VIRT_IF" --arg s "$SSID" --arg p "$PASS" \
                '.main_interface=$m | .virt_interface=$v | .ssid=$s | .password=$p' \
@@ -221,7 +224,7 @@ case "$1" in
                
             echo "Konfigurasi disimpan. Jalankan --restart untuk menerapkan."
         else
-            # Mode Inline (key=value)
+            # Mode Inline
             while [ ! -z "$1" ]; do
                 KEY=$(echo "$1" | cut -d'=' -f1)
                 VAL=$(echo "$1" | cut -d'=' -f2-)
@@ -258,7 +261,6 @@ case "$1" in
         
         echo "Mengunduh update ($REMOTE_VER)..."
         
-        # Cek status hotspot
         IS_ACTIVE="no"
         if ip link show $(jq -r '.virt_interface' "$CONFIG_FILE") >/dev/null 2>&1; then
              if ip addr show $(jq -r '.virt_interface' "$CONFIG_FILE") | grep -q "inet"; then
@@ -271,7 +273,6 @@ case "$1" in
             bash "$INSTALL_DIR/hotspot_ctrl.sh" off
         fi
         
-        # Download Files
         curl -s "$REPO_RAW/hotspot_ctrl.sh" -o "$INSTALL_DIR/hotspot_ctrl.sh"
         curl -s "$REPO_RAW/hotspot_gui.py" -o "$INSTALL_DIR/hotspot_gui.py"
         echo "$REMOTE_VER" > "$VERSION_FILE"
