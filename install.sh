@@ -1,15 +1,11 @@
 #!/bin/bash
 
-# --- 1. STRICT ROOT CHECK (Tanpa Auto-Sudo) ---
+# --- 1. STRICT ROOT CHECK ---
 if [ "$EUID" -ne 0 ]; then
   echo "ERROR: Script ini WAJIB dijalankan sebagai root."
   echo "Silakan jalankan ulang dengan: sudo bash install.sh"
   exit 1
 fi
-
-# --- KONFIGURASI UTAMA ---
-APP_VERSION="1.24" # Versi Installer Ini
-# -------------------------
 
 # --- KONFIGURASI PATH ---
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -18,6 +14,20 @@ BIN_PATH="/usr/bin/linux-hotspot-manager"
 DESKTOP_SRC="$CURRENT_DIR/Hotspot.desktop"
 LOG_FILE="/var/log/linux-hotspot-manager.log"
 REPO_RAW_URL="https://raw.githubusercontent.com/Gibekkk/Linux-Hotspot-Manager/main"
+
+# --- 2. BACA VERSION DARI FILE LOKAL ---
+VERSION_SRC="$CURRENT_DIR/version.txt"
+
+if [ -f "$VERSION_SRC" ]; then
+    # Baca file dan hapus spasi/newline yang tidak perlu
+    APP_VERSION=$(cat "$VERSION_SRC" | tr -d ' \n\r')
+    echo "Versi terdeteksi dari file: $APP_VERSION"
+else
+    echo "WARNING: version.txt tidak ditemukan di folder installer."
+    echo "Menggunakan versi default: 1.0"
+    APP_VERSION="1.0"
+fi
+# -------------------------
 
 # Deteksi Icon
 ICON_SRC=$(find "$CURRENT_DIR" -maxdepth 1 -name "icon.png" -o -name "icon.jpeg" -o -name "icon.jpg" | head -n 1)
@@ -39,7 +49,7 @@ apt-get install -y python3-tk python3-pil.imagetk dnsmasq-base jq iw network-man
 echo "[2/8] Membuat direktori aplikasi..."
 mkdir -p "$INSTALL_DIR"
 
-# PENTING: Paksa tulis versi 1.24 ke file lokal
+# PENTING: Tulis versi yang dibaca tadi ke sistem (/opt/...)
 echo "$APP_VERSION" > "$INSTALL_DIR/version.txt"
 
 # 4. Konfigurasi Interface Wi-Fi
@@ -163,7 +173,7 @@ echo "Uninstall selesai. Sistem bersih."
 EOF
 chmod +x "$INSTALL_DIR/uninstall.sh"
 
-# 7. WRAPPER BINARY (ANTI-CACHE & STRICT SUDO)
+# 7. WRAPPER BINARY
 echo "[7/8] Membuat command '$BIN_PATH'..."
 rm -f "$BIN_PATH"
 
@@ -196,7 +206,6 @@ get_local_version() {
 
 get_remote_version() {
     # Anti-Cache: Tambahkan parameter waktu (?t=timestamp)
-    # Ini memaksa GitHub memberikan file terbaru, bukan cache
     curl -s --max-time 5 "${REPO_RAW}/version.txt?t=$(date +%s)" | tr -d ' \n\r'
 }
 
@@ -209,7 +218,6 @@ check_update_available() {
     fi
     
     if [ "$LOCAL_VER" != "$REMOTE_VER" ]; then
-        # Cek jika lokal lebih tinggi (Dev version)
         if [[ "$LOCAL_VER" > "$REMOTE_VER" ]]; then
              return
         fi
@@ -348,9 +356,8 @@ case "$1" in
         curl -s "${REPO_RAW}/hotspot_ctrl.sh?t=$(date +%s)" -o "$INSTALL_DIR/hotspot_ctrl.sh"
         curl -s "${REPO_RAW}/hotspot_gui.py?t=$(date +%s)" -o "$INSTALL_DIR/hotspot_gui.py"
         
-        # UPDATE VERSION FILE LOKAL (PENTING)
+        # Update Version File Lokal
         echo "$REMOTE_VER" > "$VERSION_FILE"
-        
         chmod +x "$INSTALL_DIR/hotspot_ctrl.sh"
 
         REQ_URL="${REPO_RAW}/requirements.txt?t=$(date +%s)"
