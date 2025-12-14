@@ -37,7 +37,7 @@ class HotspotApp:
         
         self.app_version = self.get_version()
         self.root.title(f"Linux Hotspot Manager V{self.app_version}")
-        self.root.geometry("680x560")
+        self.root.geometry("680x580") # Sedikit diperbesar
         
         style = ttk.Style()
         style.configure("Overlay.TFrame", background="#f0f0f0") 
@@ -94,6 +94,10 @@ class HotspotApp:
         self.limit_var = tk.IntVar(value=self.config.get("limit", 5))
         self.limit_spin = ttk.Spinbox(settings_frame, from_=1, to=50, textvariable=self.limit_var, width=3, command=self.save_config)
         self.limit_spin.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Tombol Config Baru
+        self.cfg_btn = ttk.Button(settings_frame, text="Config Wi-Fi", command=self.open_wifi_config)
+        self.cfg_btn.pack(side=tk.LEFT, padx=(0, 5))
 
         self.bl_btn = ttk.Button(settings_frame, text="Blacklist", command=self.open_blacklist_overlay)
         self.bl_btn.pack(side=tk.LEFT)
@@ -186,7 +190,113 @@ class HotspotApp:
             self.status_label.configure(foreground="red")
             self.btn_text.set("Nyalakan Hotspot")
             return False
+
+    # --- WIFI CONFIGURATION GUI ---
+    def open_wifi_config(self):
+        cfg_win = tk.Toplevel(self.root)
+        cfg_win.title("Konfigurasi Wi-Fi Hotspot")
+        cfg_win.geometry("400x350")
+        
+        # Load Current Data
+        try:
+            with open(WIFI_CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+        except:
+            data = {}
+
+        ttk.Label(cfg_win, text="Pengaturan Hotspot", font=("Helvetica", 12, "bold")).pack(pady=15)
+        
+        form_frame = ttk.Frame(cfg_win, padding=10)
+        form_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Main Interface
+        ttk.Label(form_frame, text="Main Interface (Sumber Internet):").pack(anchor="w")
+        main_if_var = tk.StringVar(value=data.get("main_interface", ""))
+        ttk.Entry(form_frame, textvariable=main_if_var).pack(fill=tk.X, pady=(0, 10))
+        
+        # Virtual Interface
+        ttk.Label(form_frame, text="Virtual Interface (Hotspot):").pack(anchor="w")
+        virt_if_var = tk.StringVar(value=data.get("virt_interface", ""))
+        ttk.Entry(form_frame, textvariable=virt_if_var).pack(fill=tk.X, pady=(0, 10))
+
+        # SSID
+        ttk.Label(form_frame, text="Nama Hotspot (SSID):").pack(anchor="w")
+        ssid_var = tk.StringVar(value=data.get("ssid", ""))
+        ttk.Entry(form_frame, textvariable=ssid_var).pack(fill=tk.X, pady=(0, 10))
+
+        # Password
+        ttk.Label(form_frame, text="Password (Min 8 Karakter):").pack(anchor="w")
+        pass_var = tk.StringVar(value=data.get("password", ""))
+        ttk.Entry(form_frame, textvariable=pass_var, show="*").pack(fill=tk.X, pady=(0, 10))
+
+        def save_wifi():
+            # Validasi Sederhana
+            if len(pass_var.get()) < 8:
+                messagebox.showerror("Error", "Password minimal 8 karakter!")
+                return
+            if not main_if_var.get() or not virt_if_var.get():
+                messagebox.showerror("Error", "Interface tidak boleh kosong!")
+                return
+
+            new_conf = {
+                "main_interface": main_if_var.get(),
+                "virt_interface": virt_if_var.get(),
+                "ssid": ssid_var.get(),
+                "password": pass_var.get(),
+                "profile_name": data.get("profile_name", "Hotspot-Manager-Profile")
+            }
+
+            try:
+                with open(WIFI_CONFIG_FILE, 'w') as f:
+                    json.dump(new_conf, f, indent=4)
+                
+                logging.info("User mengubah konfigurasi Wi-Fi via GUI.")
+                self.ssid_label.config(text=self.get_ssid_info()) # Update Label Depan
+                
+                if messagebox.askyesno("Restart Diperlukan", "Konfigurasi berhasil disimpan.\nRestart hotspot sekarang untuk menerapkan?"):
+                    cfg_win.destroy()
+                    self.restart_hotspot()
+                else:
+                    cfg_win.destroy()
+                    messagebox.showinfo("Info", "Perubahan akan aktif saat hotspot dinyalakan ulang.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Gagal menyimpan config: {e}")
+
+        ttk.Button(form_frame, text="Simpan Konfigurasi", command=save_wifi).pack(fill=tk.X, pady=10)
+
+    def restart_hotspot(self):
+        # Logika Restart Aman di Thread
+        if self.is_active:
+            threading.Thread(target=self._restart_thread).start()
+        else:
+            # Jika mati, nyalakan saja
+            self.toggle_hotspot()
+
+    def _restart_thread(self):
+        logging.info("Melakukan Restart Hotspot...")
+        self.toggle_btn.state(['disabled'])
+        self.status_var.set("Status: Restarting (Stopping)...")
+        
+        # Matikan
+        self.run_script("off")
+        time.sleep(2) # Beri jeda agar hardware siap
+        
+        # Nyalakan
+        self.status_var.set("Status: Restarting (Starting)...")
+        out = self.run_script("on")
+        
+        if "SUCCESS" in out:
+            logging.info("Restart Berhasil.")
+            self.is_active = True
+            self.check_real_status()
+        else:
+            logging.error(f"Restart Gagal: {out}")
+            self.status_var.set("Status: Error")
+            self.root.after(0, lambda: self.show_copyable_error("Gagal Restart", f"Error Log:\n{out}"))
+            self.check_real_status()
             
+        self.toggle_btn.state(['!disabled'])
+
     # --- QR CODE ---
     def show_qr_code(self):
         try:
@@ -232,7 +342,6 @@ class HotspotApp:
             txt.delete(1.0, tk.END)
             if os.path.exists(LOG_FILE):
                 with open(LOG_FILE, 'r') as f:
-                    # Baca 200 baris terakhir
                     lines = f.readlines()[-200:] 
                     txt.insert(tk.END, "".join(lines))
                 txt.see(tk.END)
@@ -272,7 +381,6 @@ class HotspotApp:
         
         btn_frame = ttk.Frame(err_win)
         btn_frame.pack(pady=10)
-        # Panggil internal viewer
         ttk.Button(btn_frame, text="Lihat Log File", command=self.view_logs).pack(side=tk.LEFT, padx=10)
         ttk.Button(btn_frame, text="Tutup", command=err_win.destroy).pack(side=tk.LEFT, padx=10)
 
