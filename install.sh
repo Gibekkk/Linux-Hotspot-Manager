@@ -7,7 +7,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # --- KONFIGURASI UTAMA ---
-APP_VERSION="1.2"  # <--- GANTI VERSI DI SINI
+APP_VERSION="1.3" # Versi Baru
 # -------------------------
 
 # --- KONFIGURASI PATH ---
@@ -30,7 +30,6 @@ if [[ ! -f "$CURRENT_DIR/hotspot_gui.py" || ! -f "$CURRENT_DIR/hotspot_ctrl.sh" 
 fi
 
 # 2. Install Dependencies
-# Menambahkan 'qrencode' untuk fitur QR dan 'python3-pil.imagetk' untuk display gambar
 echo "[1/8] Menginstall dependencies..."
 apt-get update -qq
 apt-get install -y python3-tk python3-pil.imagetk dnsmasq-base jq iw network-manager ufw policykit-1 curl qrencode
@@ -38,8 +37,6 @@ apt-get install -y python3-tk python3-pil.imagetk dnsmasq-base jq iw network-man
 # 3. Setup Direktori Sistem
 echo "[2/8] Membuat direktori aplikasi..."
 mkdir -p "$INSTALL_DIR"
-
-# Simpan Versi ke File agar bisa dibaca GUI
 echo "$APP_VERSION" > "$INSTALL_DIR/version.txt"
 
 # 4. Konfigurasi Interface Wi-Fi
@@ -80,12 +77,10 @@ echo "[4/8] Menyalin file aplikasi..."
 cp "$CURRENT_DIR/hotspot_gui.py" "$INSTALL_DIR/"
 cp "$CURRENT_DIR/hotspot_ctrl.sh" "$INSTALL_DIR/"
 
-# Handling Icon
 if [ -n "$ICON_SRC" ]; then
     cp "$ICON_SRC" "$INSTALL_DIR/app_icon.png"
 fi
 
-# Handling Desktop Entry
 if [ -f "$DESKTOP_SRC" ]; then
     TARGET_DESKTOP="/usr/share/applications/linux-hotspot-manager.desktop"
     cp "$DESKTOP_SRC" "$TARGET_DESKTOP"
@@ -98,17 +93,15 @@ if [ -f "$DESKTOP_SRC" ]; then
     chmod 644 "$TARGET_DESKTOP"
 fi
 
-# Set Permissions
 chmod +x "$INSTALL_DIR/hotspot_ctrl.sh"
 chown -R root:root "$INSTALL_DIR"
 chmod 755 "$INSTALL_DIR"
 
-# Setup Log File
 touch "$LOG_FILE"
 chmod 666 "$LOG_FILE"
 echo "$(date) - Installed V$APP_VERSION" > "$LOG_FILE"
 
-# 6. Membuat Script Uninstaller Internal
+# 6. Script Uninstaller
 echo "[5/8] Membuat script uninstaller internal..."
 cat > "$INSTALL_DIR/uninstall.sh" <<EOF
 #!/bin/bash
@@ -129,23 +122,19 @@ echo "Uninstall selesai."
 EOF
 chmod +x "$INSTALL_DIR/uninstall.sh"
 
-# 7. MEMBUAT WRAPPER BINARY
+# 7. WRAPPER BINARY (CANGGIH)
 echo "[6/8] Membuat command '$BIN_PATH'..."
 cat > "$BIN_PATH" << 'EOF_WRAPPER'
 #!/bin/bash
 
-# --- CONFIG ---
 INSTALL_DIR="/opt/linux-hotspot-manager"
 CONFIG_FILE="$INSTALL_DIR/wifi_config.json"
 REPO_RAW="https://raw.githubusercontent.com/Gibekkk/Linux-Hotspot-Manager/main"
 VERSION_FILE="$INSTALL_DIR/version.txt"
 
-# --- HELPER FUNCTIONS ---
-
 check_root() {
     if [ "$EUID" -ne 0 ]; then
-        echo "Error: Perintah ini membutuhkan akses root."
-        echo "Silakan jalankan dengan: sudo linux-hotspot-manager $1 ..."
+        echo "Error: Perintah ini membutuhkan akses root (sudo)."
         exit 1
     fi
 }
@@ -157,7 +146,6 @@ get_local_version() {
 check_update_available() {
     LOCAL_VER=$(get_local_version)
     REMOTE_VER=$(curl -s --max-time 3 "$REPO_RAW/version.txt")
-    
     if [[ ! -z "$REMOTE_VER" && "$REMOTE_VER" != "404: Not Found" ]]; then
         if [ "$LOCAL_VER" != "$REMOTE_VER" ]; then
             echo -e "\033[1;33m[UPDATE TERSEDIA]\033[0m Versi baru: $REMOTE_VER (Lokal: $LOCAL_VER)"
@@ -168,33 +156,43 @@ check_update_available() {
 
 # --- MAIN LOGIC ---
 
-# Jika dijalankan tanpa argumen, buka GUI (pakai pkexec)
 if [ -z "$1" ]; then
     check_update_available
     if [ -z "$DISPLAY" ]; then
-        echo "Error: GUI butuh X11/Wayland. Gunakan --help untuk mode terminal."
+        echo "Error: GUI butuh X11/Wayland. Gunakan --help."
         exit 1
     fi
     pkexec env DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY python3 "$INSTALL_DIR/hotspot_gui.py"
     exit 0
 fi
 
-# Parsing Argumen CLI
 case "$1" in
     --on)
-        check_root "--on"
+        check_root
         echo "Menyalakan hotspot..."
         bash "$INSTALL_DIR/hotspot_ctrl.sh" on
         ;;
         
     --off)
-        check_root "--off"
+        check_root
         echo "Mematikan hotspot..."
         bash "$INSTALL_DIR/hotspot_ctrl.sh" off
         ;;
+
+    --status)
+        if [ ! -f "$CONFIG_FILE" ]; then echo "Config tidak ditemukan."; exit 1; fi
+        STATUS=$(bash "$INSTALL_DIR/hotspot_ctrl.sh" check)
+        SSID=$(jq -r '.ssid' "$CONFIG_FILE")
+        PASS=$(jq -r '.password' "$CONFIG_FILE")
+        echo "--------------------------"
+        echo "Status : $STATUS"
+        echo "SSID   : $SSID"
+        echo "Pass   : $PASS"
+        echo "--------------------------"
+        ;;
         
     --restart)
-        check_root "--restart"
+        check_root
         echo "Merestart hotspot..."
         bash "$INSTALL_DIR/hotspot_ctrl.sh" off
         sleep 2
@@ -202,65 +200,55 @@ case "$1" in
         ;;
 
     --config)
-        check_root "--config"
-        shift # Hapus --config dari argumen
-        
+        check_root
+        shift
         if [ -z "$1" ]; then
-            # Mode Interaktif
             echo "--- KONFIGURASI ULANG ---"
-            echo "Interface saat ini:"
             iw dev | awk '$1=="Interface"{print $2}'
-            echo "-------------------------"
-            
-            read -p "Main Interface (Internet): " MAIN_IF
-            read -p "Virtual Interface (Hotspot): " VIRT_IF
+            read -p "Main Interface: " MAIN_IF
+            read -p "Virtual Interface: " VIRT_IF
             read -p "SSID: " SSID
             read -p "Password: " PASS
-            
             tmp=$(mktemp)
             jq --arg m "$MAIN_IF" --arg v "$VIRT_IF" --arg s "$SSID" --arg p "$PASS" \
                '.main_interface=$m | .virt_interface=$v | .ssid=$s | .password=$p' \
                "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
-               
-            echo "Konfigurasi disimpan. Jalankan --restart untuk menerapkan."
+            echo "Tersimpan. Jalankan --restart."
         else
-            # Mode Inline
             while [ ! -z "$1" ]; do
                 KEY=$(echo "$1" | cut -d'=' -f1)
                 VAL=$(echo "$1" | cut -d'=' -f2-)
-                
                 if [[ "$KEY" =~ ^(ssid|password|main_interface|virt_interface)$ ]]; then
                     tmp=$(mktemp)
                     jq --arg v "$VAL" ".$KEY=\$v" "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
                     echo "Updated: $KEY -> $VAL"
-                else
-                    echo "Warning: Config '$KEY' tidak valid. Diabaikan."
                 fi
                 shift
             done
-            echo "Konfigurasi disimpan. Jangan lupa --restart."
+            echo "Tersimpan. Jalankan --restart."
         fi
         ;;
 
     --update)
-        check_root "--update"
+        check_root
         echo "Memeriksa update..."
         LOCAL_VER=$(get_local_version)
         REMOTE_VER=$(curl -s "$REPO_RAW/version.txt")
         
         if [[ -z "$REMOTE_VER" || "$REMOTE_VER" == "404: Not Found" ]]; then
-            echo "Error: Gagal cek versi ke GitHub."
+            echo "Error: Gagal cek versi."
             exit 1
         fi
         
         if [ "$LOCAL_VER" == "$REMOTE_VER" ]; then
-            echo "Aplikasi sudah versi terbaru ($LOCAL_VER)."
-            read -p "Paksa update ulang? (y/n): " FORCE
+            echo "Sudah versi terbaru ($LOCAL_VER)."
+            read -p "Paksa update? (y/n): " FORCE
             if [[ "$FORCE" != "y" ]]; then exit 0; fi
         fi
         
         echo "Mengunduh update ($REMOTE_VER)..."
         
+        # Cek status sebelum matikan
         IS_ACTIVE="no"
         if ip link show $(jq -r '.virt_interface' "$CONFIG_FILE") >/dev/null 2>&1; then
              if ip addr show $(jq -r '.virt_interface' "$CONFIG_FILE") | grep -q "inet"; then
@@ -269,15 +257,20 @@ case "$1" in
         fi
         
         if [ "$IS_ACTIVE" == "yes" ]; then
-            echo "Mematikan hotspot untuk update..."
+            echo "Mematikan hotspot..."
             bash "$INSTALL_DIR/hotspot_ctrl.sh" off
         fi
         
+        # Download Core Files
         curl -s "$REPO_RAW/hotspot_ctrl.sh" -o "$INSTALL_DIR/hotspot_ctrl.sh"
         curl -s "$REPO_RAW/hotspot_gui.py" -o "$INSTALL_DIR/hotspot_gui.py"
         echo "$REMOTE_VER" > "$VERSION_FILE"
-        
         chmod +x "$INSTALL_DIR/hotspot_ctrl.sh"
+
+        # Update Dependencies
+        echo "Mengupdate dependencies..."
+        apt-get update -qq
+        apt-get install -y python3-tk python3-pil.imagetk dnsmasq-base jq iw network-manager ufw policykit-1 curl qrencode
         
         echo "Update selesai!"
         
@@ -290,40 +283,30 @@ case "$1" in
     --version)
         echo "Linux Hotspot Manager"
         echo "Versi Lokal : $(get_local_version)"
-        echo "Cek Online..."
         REMOTE_VER=$(curl -s --max-time 3 "$REPO_RAW/version.txt")
-        if [[ ! -z "$REMOTE_VER" ]]; then
-            echo "Versi Github: $REMOTE_VER"
-        else
-            echo "Versi Github: Gagal terhubung."
-        fi
+        echo "Versi Github: ${REMOTE_VER:-Gagal}"
         ;;
 
     --uninstall)
-        check_root "--uninstall"
+        check_root
         bash "$INSTALL_DIR/uninstall.sh"
         ;;
 
     --help)
         echo "Linux Hotspot Manager CLI"
-        echo "Usage: linux-hotspot-manager [OPTION]"
-        echo ""
-        echo "  (tanpa argumen)      Buka GUI"
         echo "  --on                 Nyalakan hotspot"
         echo "  --off                Matikan hotspot"
-        echo "  --restart            Restart hotspot (terapkan config baru)"
-        echo "  --config             Wizard konfigurasi ulang (Interaktif)"
-        echo "  --config key=val...  Ubah config spesifik (ssid, password, dll)"
-        echo "                       Contoh: sudo linux-hotspot-manager --config ssid=\"Nama\" password=\"123\""
-        echo "  --update             Update aplikasi dari GitHub"
+        echo "  --status             Cek status, SSID, Pass"
+        echo "  --restart            Restart hotspot"
+        echo "  --config             Setup ulang"
+        echo "  --config key=val...  Ubah config (ssid, password)"
+        echo "  --update             Update aplikasi & dependencies"
         echo "  --version            Cek versi"
         echo "  --uninstall          Hapus aplikasi"
-        echo "  --help               Tampilkan pesan ini"
         ;;
 
     *)
-        echo "Perintah tidak dikenal: $1"
-        echo "Gunakan --help untuk bantuan."
+        echo "Perintah salah. Gunakan --help."
         exit 1
         ;;
 esac
@@ -333,16 +316,12 @@ chmod +x "$BIN_PATH"
 
 echo ""
 echo "=== INSTALASI SUKSES ==="
-echo "Perintah CLI tersedia (Gunakan sudo):"
-echo "  linux-hotspot-manager --config ssid=\"Baru\""
-echo "  linux-hotspot-manager --restart"
-echo "  linux-hotspot-manager --update"
-echo "  linux-hotspot-manager --help"
+echo "Coba jalankan: sudo linux-hotspot-manager --status"
 echo ""
 
 # 8. Prompt Hapus Installer
 echo "[8/8] Pembersihan"
-read -p "Apakah Anda ingin menghapus file installer ini? (y/n): " confirm
+read -p "Hapus file installer ini? (y/n): " confirm
 if [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]]; then
     rm -rf "$CURRENT_DIR"
     echo "File installer dihapus."

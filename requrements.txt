@@ -1,0 +1,10 @@
+python3-tk
+python3-pil.imagetk
+dnsmasq-base
+jq
+iw
+network-manager
+ufw
+policykit-1
+curl
+qrencode

@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, scrolledtext
 import subprocess
 import os
 import threading
@@ -10,7 +10,7 @@ import sys
 import logging
 
 # --- KONFIGURASI FILE & PATH ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = "/opt/linux-hotspot-manager" # Path Absolut
 SCRIPT_PATH = os.path.join(BASE_DIR, "hotspot_ctrl.sh")
 APP_CONFIG_FILE = os.path.join(BASE_DIR, "app_config.json")
 WIFI_CONFIG_FILE = os.path.join(BASE_DIR, "wifi_config.json")
@@ -35,10 +35,9 @@ class HotspotApp:
         logging.info("Aplikasi GUI dimulai.")
         self.root = root
         
-        # Ambil Versi
         self.app_version = self.get_version()
         self.root.title(f"Linux Hotspot Manager V{self.app_version}")
-        self.root.geometry("680x550")
+        self.root.geometry("680x560")
         
         style = ttk.Style()
         style.configure("Overlay.TFrame", background="#f0f0f0") 
@@ -61,7 +60,7 @@ class HotspotApp:
         footer_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
         self.count_var = tk.StringVar(value="Total: 0")
         ttk.Label(footer_frame, textvariable=self.count_var, font=("Helvetica", 9)).pack(side=tk.RIGHT)
-        ttk.Label(footer_frame, text=f"Linux Hotspot Manager V{self.app_version}", font=("Helvetica", 9, "italic"), foreground="gray").pack(side=tk.LEFT)
+        ttk.Label(footer_frame, text=f"V{self.app_version}", font=("Helvetica", 9, "italic"), foreground="gray").pack(side=tk.LEFT)
 
         # Header
         top_container = ttk.Frame(main_frame)
@@ -70,7 +69,7 @@ class HotspotApp:
         self.header = ttk.Label(top_container, text="Wi-Fi Repeater Controller", font=("Helvetica", 16, "bold"))
         self.header.pack(pady=(0, 5))
         
-        # Info SSID & QR Button
+        # Info SSID & QR
         info_frame = ttk.Frame(top_container)
         info_frame.pack(pady=(0, 15))
         
@@ -91,12 +90,12 @@ class HotspotApp:
         settings_frame = ttk.Frame(ctrl_frame)
         settings_frame.pack(side=tk.RIGHT)
         
-        ttk.Label(settings_frame, text="Limit Client:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(settings_frame, text="Limit:").pack(side=tk.LEFT, padx=5)
         self.limit_var = tk.IntVar(value=self.config.get("limit", 5))
         self.limit_spin = ttk.Spinbox(settings_frame, from_=1, to=50, textvariable=self.limit_var, width=3, command=self.save_config)
         self.limit_spin.pack(side=tk.LEFT, padx=(0, 10))
 
-        self.bl_btn = ttk.Button(settings_frame, text="Manage Blacklist", command=self.open_blacklist_overlay)
+        self.bl_btn = ttk.Button(settings_frame, text="Blacklist", command=self.open_blacklist_overlay)
         self.bl_btn.pack(side=tk.LEFT)
 
         # Toggle Button
@@ -188,7 +187,7 @@ class HotspotApp:
             self.btn_text.set("Nyalakan Hotspot")
             return False
             
-    # --- QR CODE FEATURE ---
+    # --- QR CODE ---
     def show_qr_code(self):
         try:
             with open(WIFI_CONFIG_FILE, 'r') as f:
@@ -200,25 +199,17 @@ class HotspotApp:
                 messagebox.showerror("Error", "Config tidak valid.")
                 return
 
-            # Format String WiFi: WIFI:T:WPA;S:MySSID;P:MyPassword;;
-            # Gunakan qrencode (CLI tool) untuk generate PNG
             qr_string = f"WIFI:T:WPA;S:{ssid};P:{password};;"
             cmd = ["qrencode", "-o", QR_TEMP_FILE, "-s", "6", "-l", "M", qr_string]
-            
             subprocess.run(cmd, check=True)
             
-            # Tampilkan di Window Baru
             qr_win = tk.Toplevel(self.root)
             qr_win.title("Scan to Connect")
             qr_win.geometry("300x350")
-            
-            # Load Image
             img = tk.PhotoImage(file=QR_TEMP_FILE)
-            
             lbl_img = ttk.Label(qr_win, image=img)
-            lbl_img.image = img # Keep reference
+            lbl_img.image = img
             lbl_img.pack(pady=20)
-            
             ttk.Label(qr_win, text=f"SSID: {ssid}", font=("Helvetica", 10, "bold")).pack()
             ttk.Label(qr_win, text=f"Pass: {password}", font=("Helvetica", 9)).pack()
             ttk.Button(qr_win, text="Tutup", command=qr_win.destroy).pack(pady=10)
@@ -228,18 +219,45 @@ class HotspotApp:
         except Exception as e:
              messagebox.showerror("Error", f"Gagal generate QR: {e}")
 
-    def open_log_file(self):
-        try:
-            subprocess.Popen(['xdg-open', LOG_FILE])
-        except Exception as e:
-            messagebox.showerror("Error", f"Gagal membuka log: {e}")
+    # --- INTERNAL LOG VIEWER ---
+    def view_logs(self):
+        log_win = tk.Toplevel(self.root)
+        log_win.title("System Logs")
+        log_win.geometry("700x500")
+        
+        txt = scrolledtext.ScrolledText(log_win, wrap=tk.WORD, font=("Consolas", 9))
+        txt.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        def refresh():
+            txt.delete(1.0, tk.END)
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, 'r') as f:
+                    # Baca 200 baris terakhir
+                    lines = f.readlines()[-200:] 
+                    txt.insert(tk.END, "".join(lines))
+                txt.see(tk.END)
+            else:
+                txt.insert(tk.END, "Log file belum ada.")
+
+        def clear_log():
+            if messagebox.askyesno("Clear Log", "Hapus semua log?"):
+                with open(LOG_FILE, 'w') as f: f.write("")
+                refresh()
+
+        btn_frame = ttk.Frame(log_win)
+        btn_frame.pack(fill=tk.X, pady=5, padx=5)
+        ttk.Button(btn_frame, text="Refresh", command=refresh).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Clear Log", command=clear_log).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Tutup", command=log_win.destroy).pack(side=tk.RIGHT)
+        
+        refresh()
 
     def show_copyable_error(self, title, message):
         err_win = tk.Toplevel(self.root)
         err_win.title(title)
         err_win.geometry("600x450")
         
-        lbl = ttk.Label(err_win, text="Terjadi kesalahan. Silakan cek log untuk detail.", font=("Helvetica", 10, "bold"), foreground="red")
+        lbl = ttk.Label(err_win, text="Terjadi kesalahan. Silakan cek log.", font=("Helvetica", 10, "bold"), foreground="red")
         lbl.pack(pady=10)
 
         txt_frame = ttk.Frame(err_win)
@@ -254,7 +272,8 @@ class HotspotApp:
         
         btn_frame = ttk.Frame(err_win)
         btn_frame.pack(pady=10)
-        ttk.Button(btn_frame, text="Lihat Log File", command=self.open_log_file).pack(side=tk.LEFT, padx=10)
+        # Panggil internal viewer
+        ttk.Button(btn_frame, text="Lihat Log File", command=self.view_logs).pack(side=tk.LEFT, padx=10)
         ttk.Button(btn_frame, text="Tutup", command=err_win.destroy).pack(side=tk.LEFT, padx=10)
 
     def toggle_hotspot(self):
@@ -287,7 +306,7 @@ class HotspotApp:
                     self.btn_text.set("Matikan Hotspot")
             else:
                 logging.error(f"Gagal menyalakan hotspot. Output: {out}")
-                self.root.after(0, lambda: self.show_copyable_error("Gagal Menyalakan", f"Error Log:\n{out}\n\nCek file log untuk detail lengkap."))
+                self.root.after(0, lambda: self.show_copyable_error("Gagal Menyalakan", f"Error Log:\n{out}"))
                 self.status_var.set("Status: Error")
                 self.check_real_status()
         else:

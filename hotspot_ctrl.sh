@@ -1,28 +1,42 @@
 #!/bin/bash
 
-# --- KONFIGURASI ---
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-WIFI_CONFIG="$SCRIPT_DIR/wifi_config.json"
+# --- KONFIGURASI PATH ABSOLUT ---
+# Kita kunci ke /opt agar tidak error saat dijalankan dari wrapper/sudo
+BASE_DIR="/opt/linux-hotspot-manager"
+WIFI_CONFIG="$BASE_DIR/wifi_config.json"
 LOG_FILE="/var/log/linux-hotspot-manager.log"
 
-# Fungsi Logging dengan Timestamp
+# Fungsi Logging
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') [BACKEND] $1" >> "$LOG_FILE"
 }
 
-# Cek dependencies
+# Cek dependencies dasar
 if ! command -v jq &> /dev/null; then 
-    log "Error: 'jq' missing."
     echo "Error: 'jq' missing."
     exit 1
 fi
 
-# Load Config
-MAIN_IF=$(jq -r '.main_interface' "$WIFI_CONFIG")
-VIRT_IF=$(jq -r '.virt_interface' "$WIFI_CONFIG")
-SSID_NAME=$(jq -r '.ssid' "$WIFI_CONFIG")
-WIFI_PASSWORD=$(jq -r '.password' "$WIFI_CONFIG")
-NM_PROFILE_NAME=$(jq -r '.profile_name' "$WIFI_CONFIG")
+# Cek keberadaan Config
+if [ ! -f "$WIFI_CONFIG" ]; then
+    log "CRITICAL: Config file not found at $WIFI_CONFIG"
+    echo "Error: Config file hilang. Jalankan --config untuk setup ulang."
+    exit 1
+fi
+
+# Load Config dengan Validasi
+MAIN_IF=$(jq -r '.main_interface // empty' "$WIFI_CONFIG")
+VIRT_IF=$(jq -r '.virt_interface // empty' "$WIFI_CONFIG")
+SSID_NAME=$(jq -r '.ssid // empty' "$WIFI_CONFIG")
+WIFI_PASSWORD=$(jq -r '.password // empty' "$WIFI_CONFIG")
+NM_PROFILE_NAME=$(jq -r '.profile_name // "Hotspot-Manager-Profile"' "$WIFI_CONFIG")
+
+# Validasi Variabel Penting
+if [ -z "$MAIN_IF" ]; then
+    log "Error: Main Interface belum diset di config."
+    echo "Error: Konfigurasi Interface kosong. Cek wifi_config.json."
+    exit 1
+fi
 
 function start_hotspot() {
     log "--- Memulai Hotspot ---"
@@ -32,7 +46,7 @@ function start_hotspot() {
     FREQ_INFO=$(iw dev $MAIN_IF info 2>&1)
     if [ $? -ne 0 ]; then
         log "Error: Gagal membaca info dari $MAIN_IF. Detail: $FREQ_INFO"
-        echo "Error: Interface $MAIN_IF bermasalah."
+        echo "Error: Interface $MAIN_IF tidak ditemukan/bermasalah."
         exit 1
     fi
 
@@ -41,7 +55,7 @@ function start_hotspot() {
     
     if [ -z "$CURRENT_CHANNEL" ]; then 
         log "Error: $MAIN_IF tidak terhubung ke jaringan Wi-Fi apapun."
-        echo "Error: $MAIN_IF tidak terhubung."
+        echo "Error: $MAIN_IF tidak terhubung ke internet/wifi utama."
         exit 1
     fi
 
@@ -55,7 +69,6 @@ function start_hotspot() {
 
     # Bersihkan Interface Lama
     if ip link show $VIRT_IF > /dev/null 2>&1; then
-        log "Membersihkan interface lama $VIRT_IF..."
         nmcli device disconnect $VIRT_IF > /dev/null 2>&1
         ip link set $VIRT_IF down
         iw dev $VIRT_IF del
@@ -67,7 +80,7 @@ function start_hotspot() {
     ADD_OUT=$(iw dev $MAIN_IF interface add $VIRT_IF type __ap 2>&1)
     if [ $? -ne 0 ]; then
         log "FATAL: Gagal membuat interface. $ADD_OUT"
-        echo "FAIL: Driver Error"
+        echo "FAIL: Driver Error ($ADD_OUT)"
         exit 1
     fi
     
@@ -76,7 +89,6 @@ function start_hotspot() {
     sleep 1
 
     # Setup NetworkManager
-    log "Mengkonfigurasi NetworkManager Profile..."
     nmcli connection delete "$NM_PROFILE_NAME" > /dev/null 2>&1
     
     nmcli con add type wifi ifname $VIRT_IF con-name "$NM_PROFILE_NAME" autoconnect yes ssid "$SSID_NAME" > /dev/null
@@ -92,7 +104,6 @@ function start_hotspot() {
 
     # Firewall
     if command -v ufw > /dev/null; then
-        log "Setting Firewall Rules..."
         ufw allow in on $VIRT_IF > /dev/null 2>&1
         ufw route allow in on $VIRT_IF out on $MAIN_IF > /dev/null 2>&1
         ufw allow in on $VIRT_IF to any port 67 proto udp > /dev/null 2>&1
@@ -102,7 +113,6 @@ function start_hotspot() {
 
     # Nyalakan
     nmcli device set $VIRT_IF autoconnect no 2>/dev/null
-    log "Mengaktifkan koneksi..."
     OUTPUT=$(nmcli connection up "$NM_PROFILE_NAME" 2>&1)
     
     if [ $? -eq 0 ]; then 
@@ -125,7 +135,6 @@ function stop_hotspot() {
     nmcli connection delete "$NM_PROFILE_NAME" > /dev/null 2>&1
     ip link set $VIRT_IF down > /dev/null 2>&1
     iw dev $VIRT_IF del > /dev/null 2>&1
-    log "Hotspot dimatikan."
     echo "STOPPED"
 }
 
