@@ -7,10 +7,6 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# --- KONFIGURASI UTAMA ---
-APP_VERSION="1.29" # Sesuaikan dengan versi Anda saat ini
-# -------------------------
-
 # --- KONFIGURASI PATH ---
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALL_DIR="/opt/linux-hotspot-manager"
@@ -26,6 +22,7 @@ if [ -f "$VERSION_SRC" ]; then
     APP_VERSION=$(cat "$VERSION_SRC" | tr -d ' \n\r')
     echo "Versi terdeteksi dari file: $APP_VERSION"
 else
+    APP_VERSION="1.0"
     echo "WARNING: version.txt tidak ditemukan. Menggunakan default: $APP_VERSION"
 fi
 
@@ -168,10 +165,11 @@ echo "Uninstall selesai. Sistem bersih."
 EOF
 chmod +x "$INSTALL_DIR/uninstall.sh"
 
-# 7. WRAPPER BINARY (ANTI-CACHE IMPLEMENTED)
+# 7. WRAPPER BINARY
 echo "[7/8] Membuat command '$BIN_PATH'..."
 rm -f "$BIN_PATH"
 
+# PERHATIKAN: EOF_WRAPPER harus rata kiri tanpa spasi di depannya
 cat > "$BIN_PATH" << 'EOF_WRAPPER'
 #!/bin/bash
 
@@ -198,9 +196,7 @@ get_local_version() {
 }
 
 get_remote_version() {
-    # --- ANTI CACHE TRICK ---
-    # Menambahkan ?t=$(date +%s) membuat URL unik setiap detik
-    # Ini memaksa GitHub memberikan file terbaru, bukan cache
+    # Anti-Cache
     curl -s --max-time 5 "${REPO_RAW}/version.txt?t=$(date +%s)" | tr -d ' \n\r'
 }
 
@@ -213,7 +209,6 @@ check_update_available() {
     fi
     
     if [ "$LOCAL_VER" != "$REMOTE_VER" ]; then
-        # Jika lokal lebih tinggi, anggap dev version
         if [[ "$LOCAL_VER" > "$REMOTE_VER" ]]; then
              return
         fi
@@ -287,3 +282,140 @@ case "$1" in
             
             read -p "SSID (Linux Hotspot): " SSID
             SSID=${SSID:-"Linux Hotspot"}
+            
+            read -p "Password (12345678): " PASS
+            PASS=${PASS:-"12345678"}
+            
+            tmp=$(mktemp)
+            jq --arg m "$MAIN_IF" --arg v "$VIRT_IF" --arg s "$SSID" --arg p "$PASS" \
+               '.main_interface=$m | .virt_interface=$v | .ssid=$s | .password=$p' \
+               "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+            echo "Tersimpan. Jalankan --restart."
+        else
+            while [ ! -z "$1" ]; do
+                KEY=$(echo "$1" | cut -d'=' -f1)
+                VAL=$(echo "$1" | cut -d'=' -f2-)
+                if [[ "$KEY" =~ ^(ssid|password|main_interface|virt_interface)$ ]]; then
+                    tmp=$(mktemp)
+                    jq --arg v "$VAL" ".$KEY=\$v" "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+                    echo "Updated: $KEY -> $VAL"
+                fi
+                shift
+            done
+            echo "Tersimpan. Jalankan --restart."
+        fi
+        ;;
+
+    --update)
+        require_root
+        echo "Memeriksa update..."
+        LOCAL_VER=$(get_local_version)
+        REMOTE_VER=$(get_remote_version)
+        
+        if [ -z "$REMOTE_VER" ] || [[ "$REMOTE_VER" == *"404"* ]]; then
+            echo "Error: Gagal terhubung ke GitHub."
+            exit 1
+        fi
+        
+        if [ "$LOCAL_VER" == "$REMOTE_VER" ]; then
+            echo "Aplikasi sudah versi terbaru ($LOCAL_VER)."
+            read -p "Paksa update ulang? (y/n): " FORCE
+            if [[ "$FORCE" != "y" ]]; then exit 0; fi
+        fi
+
+        if [[ "$LOCAL_VER" > "$REMOTE_VER" ]]; then
+            echo "Versi lokal ($LOCAL_VER) lebih baru dari GitHub ($REMOTE_VER)."
+            read -p "Downgrade ke versi GitHub? (y/n): " FORCE
+            if [[ "$FORCE" != "y" ]]; then exit 0; fi
+        fi
+        
+        echo "Mengunduh update ($REMOTE_VER)..."
+        
+        IS_ACTIVE="no"
+        if ip link show $(jq -r '.virt_interface' "$CONFIG_FILE" 2>/dev/null) >/dev/null 2>&1; then
+             if ip addr show $(jq -r '.virt_interface' "$CONFIG_FILE" 2>/dev/null) | grep -q "inet"; then
+                 IS_ACTIVE="yes"
+             fi
+        fi
+        
+        if [ "$IS_ACTIVE" == "yes" ]; then
+            echo "Mematikan hotspot sementara..."
+            bash "$INSTALL_DIR/hotspot_ctrl.sh" off
+        fi
+        
+        curl -s "${REPO_RAW}/hotspot_ctrl.sh?t=$(date +%s)" -o "$INSTALL_DIR/hotspot_ctrl.sh"
+        curl -s "${REPO_RAW}/hotspot_gui.py?t=$(date +%s)" -o "$INSTALL_DIR/hotspot_gui.py"
+        
+        echo "$REMOTE_VER" > "$VERSION_FILE"
+        chmod +x "$INSTALL_DIR/hotspot_ctrl.sh"
+
+        REQ_URL="${REPO_RAW}/requirements.txt?t=$(date +%s)"
+        if curl --output /dev/null --silent --head --fail "$REQ_URL"; then
+            echo "Mengupdate dependencies..."
+            DEPS=$(curl -s "$REQ_URL" | grep -vE "^\s*#" | tr '\n' ' ')
+            if [ ! -z "$DEPS" ]; then
+                apt-get update -qq
+                apt-get install -y $DEPS
+            fi
+        fi
+        
+        echo "Update selesai! Versi sekarang: $REMOTE_VER"
+        
+        if [ "$IS_ACTIVE" == "yes" ]; then
+            echo "Menyalakan kembali hotspot..."
+            bash "$INSTALL_DIR/hotspot_ctrl.sh" on
+        fi
+        ;;
+
+    --version)
+        echo "Linux Hotspot Manager"
+        LOCAL=$(get_local_version)
+        echo "Versi Lokal : $LOCAL"
+        REMOTE=$(get_remote_version)
+        echo "Versi Github: ${REMOTE:-Gagal}"
+        ;;
+
+    --uninstall)
+        require_root
+        bash "$INSTALL_DIR/uninstall.sh"
+        ;;
+
+    --help)
+        echo "Linux Hotspot Manager CLI"
+        echo "  --on                 Nyalakan"
+        echo "  --off                Matikan"
+        echo "  --status             Cek status"
+        echo "  --restart            Restart"
+        echo "  --config             Setup ulang"
+        echo "  --update             Update aplikasi"
+        echo "  --version            Cek versi"
+        echo "  --uninstall          Hapus aplikasi"
+        ;;
+
+    *)
+        echo "Perintah salah. Gunakan --help."
+        exit 1
+        ;;
+esac
+EOF_WRAPPER
+
+chmod +x "$BIN_PATH"
+
+echo ""
+echo "=== INSTALASI SUKSES ==="
+echo "Jalankan linux-hotspot-manager --help untuk informasi lebih lanjut."
+echo ""
+
+# 8. Prompt Hapus Installer
+echo "[8/8] Pembersihan"
+read -p "Hapus file installer ini? (Y/n): " confirm
+confirm=${confirm:-Y} 
+
+if [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]]; then
+    rm -rf "$CURRENT_DIR"
+    echo "File installer dihapus."
+else
+    echo "File installer disimpan."
+fi
+
+exit 0
