@@ -7,6 +7,10 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# --- KONFIGURASI UTAMA ---
+APP_VERSION="1.30" # Update version
+# -------------------------
+
 # --- KONFIGURASI PATH ---
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALL_DIR="/opt/linux-hotspot-manager"
@@ -17,13 +21,10 @@ REPO_RAW_URL="https://raw.githubusercontent.com/Gibekkk/Linux-Hotspot-Manager/ma
 
 # --- 2. BACA VERSION DARI FILE LOKAL ---
 VERSION_SRC="$CURRENT_DIR/version.txt"
-
 if [ -f "$VERSION_SRC" ]; then
     APP_VERSION=$(cat "$VERSION_SRC" | tr -d ' \n\r')
-    echo "Versi terdeteksi dari file: $APP_VERSION"
 else
     APP_VERSION="1.0"
-    echo "WARNING: version.txt tidak ditemukan. Menggunakan default: $APP_VERSION"
 fi
 
 # Deteksi Icon
@@ -47,8 +48,26 @@ echo "[2/8] Membuat direktori aplikasi..."
 mkdir -p "$INSTALL_DIR"
 echo "$APP_VERSION" > "$INSTALL_DIR/version.txt"
 
-# 4. Konfigurasi Interface
+# 4. Konfigurasi Interface (SMART WIRELESS DETECTION)
 echo "[3/8] Konfigurasi Jaringan..."
+
+# --- LOGIKA DETEKSI BARU (HANYA WIFI) ---
+detect_wifi_interface() {
+    # 1. Ambil semua interface wireless asli
+    WIFI_LIST=$(iw dev | awk '$1=="Interface"{print $2}')
+    
+    # 2. Ambil interface yang punya koneksi internet (default route)
+    DEFAULT_ROUTE=$(ip route | grep default | awk '{print $5}' | head -n1)
+    
+    # 3. Cek apakah default route itu ada di daftar WIFI_LIST?
+    if [[ $WIFI_LIST == *"$DEFAULT_ROUTE"* && -n "$DEFAULT_ROUTE" ]]; then
+        echo "$DEFAULT_ROUTE"
+    else
+        # Jika default route bukan wifi (misal docker0/eth0), ambil wifi pertama
+        echo "$WIFI_LIST" | head -n1
+    fi
+}
+# ----------------------------------------
 
 if [ -f "$INSTALL_DIR/wifi_config.json" ]; then
     read -p "Config lama ditemukan. Gunakan kembali? (Y/n): " USE_OLD
@@ -62,12 +81,21 @@ else
     iw dev | awk '$1=="Interface"{print $2}'
     echo "---------------------------------------"
 
-    AUTO_MAIN=$(ip route | grep default | awk '{print $5}' | head -n1)
+    AUTO_MAIN=$(detect_wifi_interface)
+    
     while true; do
         read -p "Main Interface (Default: ${AUTO_MAIN:-kosong}): " INPUT_MAIN
         MAIN_IF=${INPUT_MAIN:-$AUTO_MAIN}
+        
         if [ -n "$MAIN_IF" ]; then
-            if ip link show "$MAIN_IF" >/dev/null 2>&1; then break; else echo "Error: Interface tidak ditemukan."; fi
+            # Validasi: Harus ada di sistem DAN harus Wireless
+            if ! ip link show "$MAIN_IF" >/dev/null 2>&1; then
+                echo "Error: Interface tidak ditemukan."
+            elif ! iw dev "$MAIN_IF" info >/dev/null 2>&1; then
+                echo "Error: '$MAIN_IF' bukan interface Wi-Fi (Mungkin Ethernet/Docker?). Pilih yang lain."
+            else
+                break
+            fi
         else
             echo "Error: Wajib diisi."; 
         fi
@@ -169,7 +197,6 @@ chmod +x "$INSTALL_DIR/uninstall.sh"
 echo "[7/8] Membuat command '$BIN_PATH'..."
 rm -f "$BIN_PATH"
 
-# PERHATIKAN: EOF_WRAPPER harus rata kiri tanpa spasi di depannya
 cat > "$BIN_PATH" << 'EOF_WRAPPER'
 #!/bin/bash
 
@@ -196,7 +223,6 @@ get_local_version() {
 }
 
 get_remote_version() {
-    # Anti-Cache
     curl -s --max-time 5 "${REPO_RAW}/version.txt?t=$(date +%s)" | tr -d ' \n\r'
 }
 
@@ -204,16 +230,23 @@ check_update_available() {
     LOCAL_VER=$(get_local_version)
     REMOTE_VER=$(get_remote_version)
     
-    if [ -z "$REMOTE_VER" ] || [[ "$REMOTE_VER" == *"404"* ]]; then
-        return 
-    fi
+    if [ -z "$REMOTE_VER" ] || [[ "$REMOTE_VER" == *"404"* ]]; then return; fi
     
     if [ "$LOCAL_VER" != "$REMOTE_VER" ]; then
-        if [[ "$LOCAL_VER" > "$REMOTE_VER" ]]; then
-             return
-        fi
+        if [[ "$LOCAL_VER" > "$REMOTE_VER" ]]; then return; fi
         echo -e "\033[1;33m[UPDATE TERSEDIA]\033[0m Versi GitHub: $REMOTE_VER (Lokal: $LOCAL_VER)"
         echo "Jalankan: sudo linux-hotspot-manager --update"
+    fi
+}
+
+# --- SMART WIFI DETECTION FOR CLI CONFIG ---
+detect_wifi_interface() {
+    WIFI_LIST=$(iw dev | awk '$1=="Interface"{print $2}')
+    DEFAULT_ROUTE=$(ip route | grep default | awk '{print $5}' | head -n1)
+    if [[ $WIFI_LIST == *"$DEFAULT_ROUTE"* && -n "$DEFAULT_ROUTE" ]]; then
+        echo "$DEFAULT_ROUTE"
+    else
+        echo "$WIFI_LIST" | head -n1
     fi
 }
 
@@ -273,9 +306,16 @@ case "$1" in
             echo "--- KONFIGURASI ULANG ---"
             iw dev | awk '$1=="Interface"{print $2}'
             
-            AUTO_MAIN=$(ip route | grep default | awk '{print $5}' | head -n1)
-            read -p "Main Interface ($AUTO_MAIN): " MAIN_IF
-            MAIN_IF=${MAIN_IF:-$AUTO_MAIN}
+            # Gunakan logika deteksi baru
+            AUTO_MAIN=$(detect_wifi_interface)
+            
+            while true; do
+                read -p "Main Interface ($AUTO_MAIN): " MAIN_IF
+                MAIN_IF=${MAIN_IF:-$AUTO_MAIN}
+                # Validasi di CLI juga
+                if iw dev "$MAIN_IF" info >/dev/null 2>&1; then break; 
+                else echo "Error: '$MAIN_IF' bukan interface Wi-Fi valid."; fi
+            done
             
             read -p "Virtual Interface (wlan_ap): " VIRT_IF
             VIRT_IF=${VIRT_IF:-"wlan_ap"}
